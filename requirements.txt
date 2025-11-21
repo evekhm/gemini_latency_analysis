@@ -1,0 +1,11 @@
+google-genai
+db-dtypes
+Pillow
+tabulate
+matplotlib
+google-cloud-bigquery
+google-cloud-bigquery-storage
+google-cloud-storage
+pandas
+scipy
+google-cloud-resource-manager

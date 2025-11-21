@@ -11,8 +11,25 @@ import numpy as np
 import pandas as pd
 from google.cloud import bigquery
 from matplotlib.backends.backend_pdf import PdfPages
+from dotenv import load_dotenv
+
+load_dotenv()
 
 warnings.filterwarnings('ignore')
+
+# --- USER INPUT SECTION ---
+# BigQuery dataset and table IDs
+dataset_id = os.getenv("DATASET", "MY_DATASET")
+gemini_table_id = os.getenv("GEMINI_LOG_TABLE", "gemini_flash_logs")
+project_id = os.getenv("PROJECT_ID")
+# --- END USER INPUT SECTION ---
+
+script_dir = os.path.dirname(os.path.abspath(__file__))
+plots_dir = os.path.join(script_dir, "out")
+png_dir = os.path.join(plots_dir, "png")
+os.makedirs(png_dir, exist_ok=True)
+
+print(f"Using dataset_id={dataset_id}, gemini_table_id={gemini_table_id}, project_id={project_id}")
 
 def get_project_name(project_id):
     """Try to get project name from project ID using Google Cloud Resource Manager API"""
@@ -59,17 +76,7 @@ except ImportError:
     stats = None
 
 
-# --- USER INPUT SECTION ---
-# BigQuery dataset and table IDs
-dataset_id = os.getenv("DATASET", "MY_DATASET")
-gemini_table_id = os.getenv("GEMINI_LOG_TABLE", "gemini_flash_logs")
-project_id = os.getenv("PROJECT_ID")
-# --- END USER INPUT SECTION ---
 
-script_dir = os.path.dirname(os.path.abspath(__file__))
-plots_dir = os.path.join(script_dir, "out")
-png_dir = os.path.join(plots_dir, "png")
-os.makedirs(png_dir, exist_ok=True)
 
 if not project_id:
     # Initialize the BigQuery client
@@ -157,9 +164,9 @@ def main():
           T.request_id,
           T.full_request,
           T.full_response,
-          T.model, 
+          T.model,
           TO_JSON_STRING(T.full_response) as full_response_json,
-          JSON_VALUE(T.full_request.labels.adk_agent_name) AS agent_name,
+          COALESCE(JSON_VALUE(T.full_request.labels.adk_agent_name), 'llm_call') AS agent_name,
           CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000 AS latency_seconds,
           SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.thoughtsTokenCount) AS INT64) AS thoughts_token_count,
           SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) AS output_token_count,
@@ -205,8 +212,8 @@ def main():
         print(f"Requests with output token data: {df_gemini['output_tokens'].notna().sum()}")
         print(f"Unique models: {df_gemini['model_name'].nunique()}")
         print(f"Models found: {sorted(df_gemini['model_name'].unique())}")
-        print(f"Unique chains: {df_gemini['chain_name'].nunique()}")
-        print(f"Chains found: {sorted(df_gemini['chain_name'].unique())}")
+        print(f"Unique agents: {df_gemini['agent_name'].nunique()}")
+        print(f"Agents found: {sorted(df_gemini['agent_name'].unique())}")
 
         # Store generation time for consistent headers
         generation_time = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M%S")
@@ -307,40 +314,40 @@ def add_terminal_output_multipage(pdf, model_name, agent_name, terminal_output):
         pdf.savefig(fig, bbox_inches='tight')
         plt.close(fig)
 
-def create_model_chain_summary_table(df_model, model_name, start_filter_timestamp,
+def create_model_agent_summary_table(df_model, model_name, start_filter_timestamp,
                                      end_filter_timestamp, generation_time, save_to_pdf=None):
-    """Create a summary table showing statistics for each chain within a model"""
+    """Create a summary table showing statistics for each agent within a model"""
 
-    # Calculate statistics for each chain within this model
-    chain_stats = []
+    # Calculate statistics for each agent within this model
+    agent_stats = []
 
-    for chain_name in sorted(df_model['chain_name'].unique()):
-        if pd.notna(chain_name):
-            df_chain = df_model[df_model['chain_name'] == chain_name]
+    for agent_name in sorted(df_model['agent_name'].unique()):
+        if pd.notna(agent_name):
+            df_agent = df_model[df_model['agent_name'] == agent_name]
 
             stats_dict = {
-                'Chain Name': chain_name,
-                'Total Calls': len(df_chain),
-                'Mean Latency (s)': df_chain['latency_seconds'].mean(),
-                'Std Dev (s)': df_chain['latency_seconds'].std(),
-                'Median Latency (s)': df_chain['latency_seconds'].median(),
-                'Min Latency (s)': df_chain['latency_seconds'].min(),
-                'Max Latency (s)': df_chain['latency_seconds'].max(),
-                'P95 Latency (s)': df_chain['latency_seconds'].quantile(0.95),
-                'P99 Latency (s)': df_chain['latency_seconds'].quantile(0.99),
+                'Agent Name': agent_name,
+                'Total Calls': len(df_agent),
+                'Mean Latency (s)': df_agent['latency_seconds'].mean(),
+                'Std Dev (s)': df_agent['latency_seconds'].std(),
+                'Median Latency (s)': df_agent['latency_seconds'].median(),
+                'Min Latency (s)': df_agent['latency_seconds'].min(),
+                'Max Latency (s)': df_agent['latency_seconds'].max(),
+                'P95 Latency (s)': df_agent['latency_seconds'].quantile(0.95),
+                'P99 Latency (s)': df_agent['latency_seconds'].quantile(0.99),
             }
-            chain_stats.append(stats_dict)
+            agent_stats.append(stats_dict)
 
     # Create DataFrame for easier handling
-    df_stats = pd.DataFrame(chain_stats)
+    df_stats = pd.DataFrame(agent_stats)
 
     # Print summary to console
     print(f"Total LLM calls for this model: {len(df_model):,}")
-    print(f"Number of different chains: {len(df_stats)}")
-    print("\nPer-chain breakdown:")
+    print(f"Number of different agents: {len(df_stats)}")
+    print("\nPer-agent breakdown:")
 
     for _, row in df_stats.iterrows():
-        print(f"\n{row['Chain Name']}:")
+        print(f"\n{row['Agent Name']}:")
         print(f"  Total calls: {row['Total Calls']:,}")
         print(f"  Mean latency: {row['Mean Latency (s)']:.3f}s ± {row['Std Dev (s)']:.3f}s")
         print(f"  Median latency: {row['Median Latency (s)']:.3f}s")
@@ -360,7 +367,7 @@ def create_model_chain_summary_table(df_model, model_name, start_filter_timestam
     add_page_header(fig, start_filter_timestamp, end_filter_timestamp, generation_time,
                     f"Model: {model_name}")
 
-    fig.suptitle(f'Chain Summary Analysis - Model: {model_name}', fontsize=16, fontweight='bold', y=0.92)
+    fig.suptitle(f'Agent Summary Analysis - Model: {model_name}', fontsize=16, fontweight='bold', y=0.92)
 
     # Plot 1: Summary statistics table (now first and spans full width)
     fig = plt.figure(figsize=(20, 12))
@@ -372,7 +379,7 @@ def create_model_chain_summary_table(df_model, model_name, start_filter_timestam
     add_page_header(fig, start_filter_timestamp, end_filter_timestamp, generation_time,
                     f"Model: {model_name}")
 
-    fig.suptitle(f'Chain Summary Analysis - Model: {model_name}', fontsize=16, fontweight='bold', y=0.92)
+    fig.suptitle(f'Agent Summary Analysis - Model: {model_name}', fontsize=16, fontweight='bold', y=0.92)
 
     # Plot 1: Summary statistics table (now first and spans full width)
     ax1 = fig.add_subplot(gs[0, :])  # Spans both columns of first row
@@ -381,14 +388,14 @@ def create_model_chain_summary_table(df_model, model_name, start_filter_timestam
 
     # Prepare table data
     table_data = []
-    table_data.append(['Chain', 'Calls', 'Mean (s)', 'Std (s)', 'P95 (s)', 'P99 (s)'])
+    table_data.append(['Agent', 'Calls', 'Mean (s)', 'Std (s)', 'P95 (s)', 'P99 (s)'])
 
     for _, row in df_stats.iterrows():
-        # Use full chain name without truncation
-        chain_name = row['Chain Name']
+        # Use full agent name without truncation
+        agent_name = row['Agent Name']
 
         table_data.append([
-            chain_name,
+            agent_name,
             f"{row['Total Calls']:,}",
             f"{row['Mean Latency (s)']:.3f}",
             f"{row['Std Dev (s)']:.3f}",
@@ -432,21 +439,21 @@ def create_model_chain_summary_table(df_model, model_name, start_filter_timestam
 
     # Fix text alignment and wrapping
     for key, cell in table.get_celld().items():
-        if key[1] == 0:  # Chain name column only
+        if key[1] == 0:  # Agent name column only
             cell.set_text_props(wrap=True, ha='left', va='center', fontsize=9)
         else:
             cell.set_text_props(ha='center', va='center')
 
     ax1.set_title('Summary Statistics Table', fontsize=14, fontweight='bold')
-    # Plot 2: Total calls per chain
+    # Plot 2: Total calls per agent
     ax2 = fig.add_subplot(gs[1, 0])
     bars1 = ax2.bar(range(len(df_stats)), df_stats['Total Calls'],
                     color='skyblue', edgecolor='black', alpha=0.7)
-    ax2.set_title('Total LLM Calls per Chain', fontsize=14, fontweight='bold')
-    ax2.set_xlabel('Chain')
+    ax2.set_title('Total LLM Calls per Agent', fontsize=14, fontweight='bold')
+    ax2.set_xlabel('Agent')
     ax2.set_ylabel('Number of Calls')
     ax2.set_xticks(range(len(df_stats)))
-    ax2.set_xticklabels(df_stats['Chain Name'], rotation=45, ha='right')
+    ax2.set_xticklabels(df_stats['Agent Name'], rotation=45, ha='right')
     ax2.grid(True, alpha=0.3)
 
     # Add value labels on bars
@@ -454,16 +461,16 @@ def create_model_chain_summary_table(df_model, model_name, start_filter_timestam
         ax2.text(bar.get_x() + bar.get_width()/2., bar.get_height() + max(df_stats['Total Calls']) * 0.01,
                  f'{value:,}', ha='center', va='bottom', fontsize=10)
 
-    # Plot 3: Mean latency per chain
+    # Plot 3: Mean latency per agent
     ax3 = fig.add_subplot(gs[1, 1])
     bars2 = ax3.bar(range(len(df_stats)), df_stats['Mean Latency (s)'],
                     color='lightcoral', edgecolor='black', alpha=0.7,
                     yerr=df_stats['Std Dev (s)'], capsize=5)
-    ax3.set_title('Mean Latency per Chain (with Std Dev)', fontsize=14, fontweight='bold')
-    ax3.set_xlabel('Chain')
+    ax3.set_title('Mean Latency per Agent (with Std Dev)', fontsize=14, fontweight='bold')
+    ax3.set_xlabel('Agent')
     ax3.set_ylabel('Mean Latency (seconds)')
     ax3.set_xticks(range(len(df_stats)))
-    ax3.set_xticklabels(df_stats['Chain Name'], rotation=45, ha='right')
+    ax3.set_xticklabels(df_stats['Agent Name'], rotation=45, ha='right')
     ax3.grid(True, alpha=0.3)
 
     # Add value labels on bars
@@ -478,72 +485,73 @@ def create_model_chain_summary_table(df_model, model_name, start_filter_timestam
 
     # Save as PNG
     safe_model_name = model_name.replace("-", "_").replace(".", "_")
-    filename = os.path.join(png_dir, f'chain_summary_.png')
+    filename = os.path.join(png_dir, f'agent_summary_.png')
     plt.savefig(filename, dpi=300, bbox_inches='tight', facecolor='white')
 
 
     return df_stats
 
 def create_model_pdf(model_name, df_model, start_time, end_time, bucket_method, generation_time, bucket_sizes):
-    """Create a single PDF with all plots and terminal output for a model and all its chains"""
+    """Create a single PDF with all plots and terminal output for a model and all its agents"""
     safe_model_name = model_name.replace("-", "_").replace(".", "_")
     pdf_filename = os.path.join(plots_dir, f'complete_analysis_{safe_model_name}__{generation_time}.pdf')
 
     with PdfPages(pdf_filename) as pdf:
-        # 1. First, create a chain summary for this model
-        create_model_chain_summary_table(df_model, model_name,start_time, end_time, generation_time, save_to_pdf=pdf)
+        # 1. First, create an agent summary for this model
+        create_model_agent_summary_table(df_model, model_name,start_time, end_time, generation_time, save_to_pdf=pdf)
 
         # Get unique agents for this model
-        unique_agents = sorted([chain for chain in df_model['chain_name'].unique() if pd.notna(chain)])
+        unique_agents = sorted([agent for agent in df_model['agent_name'].unique() if pd.notna(agent)])
 
-        print(f"\nFound {len(unique_chains)} chains in model :")
-        for chain in unique_chains:
-            chain_count = len(df_model[df_model['chain_name'] == chain])
-            print(f"  - {chain}: {chain_count:,} calls")
+        print(f"\nFound {len(unique_agents)} agents in model :")
+        for agent in unique_agents:
+            agent_count = len(df_model[df_model['agent_name'] == agent])
+            print(f"  - {agent}: {agent_count:,} calls")
 
-        # 2. Loop through each chain within this model
-        for chain_name in unique_chains:
+        # 2. Loop through each agent within this model
+        for agent_name in unique_agents:
             print(f"\n{'='*50}")
-            print(f"ANALYZING CHAIN: {chain_name} (Model: {model_name})")
+            print(f"ANALYZING AGENT: {agent_name} (Model: {model_name})")
             print(f"{'='*50}")
 
-            # Start capturing output for this chain
+            # Start capturing output for this agent
             output_capture = OutputCapture()
             output_capture.start_capture()
 
-            # Filter data for this chain
-            df_chain = df_model[df_model['chain_name'] == chain_name].copy()
+            # Filter data for this agent
+            df_agent = df_model[df_model['agent_name'] == agent_name].copy()
 
-            if len(df_chain) == 0:
-                print(f"No data found for chain: {chain_name}")
+            if len(df_agent) == 0:
+                print(f"No data found for agent: {agent_name}")
                 continue
 
-            # Create analysis name combining model and chain
-            analysis_name = f"{model_name} - {chain_name}"
+            # Create analysis name combining model and agent
+            analysis_name = f"{model_name} - {agent_name}"
 
-            # Run all the original analyses for this chain
+            # Run all the original analyses for this agent
 
             # Main analysis
-            analyze_model_data(df_chain, analysis_name, start_time, end_time, generation_time, save_to_pdf=pdf)
+            analyze_model_data(df_agent, analysis_name, start_time, end_time, generation_time, save_to_pdf=pdf)
 
             # Token plots
-            df_tokens = df_chain.dropna(subset=['output_tokens']) if 'output_tokens' in df_chain.columns else None
+            df_tokens = df_agent.dropna(subset=['output_tokens']) if 'output_tokens' in df_agent.columns else None
             if df_tokens is not None and len(df_tokens) > 0:
                 create_latency_token_plots(df_tokens, model_name, analysis_name, start_time, end_time, generation_time, save_to_pdf=pdf)
 
             # Hourly analysis
-            create_hourly_analysis_with_weekday(df_chain, analysis_name, start_time, end_time, generation_time, save_to_pdf=pdf)
+            create_hourly_analysis_with_weekday(df_agent, analysis_name, start_time, end_time, generation_time, save_to_pdf=pdf)
 
             # Run concurrent analysis with configurable bucket sizes
-            for bucket_size in bucket_sizes:
-                print(f"\n" + "="*80)
-                print(f"ANALYZING {analysis_name} with -second buckets")
-                print("="*80)
-                analyze_concurrent_requests(df_chain, analysis_name, generation_time, bucket_size, bucket_method, save_to_pdf=pdf)
+            # TODO Way too long
+            # for bucket_size in bucket_sizes:
+            #     print(f"\n" + "="*80)
+            #     print(f"ANALYZING {analysis_name} with -second buckets")
+            #     print("="*80)
+            #     analyze_concurrent_requests(df_agent, analysis_name, generation_time, bucket_size, bucket_method, save_to_pdf=pdf)
 
             # Stop capturing and get terminal output
             output_capture.stop_capture()
-            add_terminal_output_multipage(pdf, model_name, chain_name, output_capture.get_output())
+            add_terminal_output_multipage(pdf, model_name, agent_name, output_capture.get_output())
 
     return pdf_filename
 
@@ -593,7 +601,7 @@ def create_latency_token_plots(df_tokens, model_name, analysis_name, start_time,
     token_latency_corr = np.corrcoef(df_tokens_positive['output_tokens'],
                                      df_tokens_positive['latency_seconds'])[0, 1]
 
-    safe_chain_name = analysis_name.replace("-", "_").replace(".", "_").replace(" ", "_")
+    safe_agent_name = analysis_name.replace("-", "_").replace(".", "_").replace(" ", "_")
 
     # Create figure with 2x2 subplots for different scale combinations
     fig, axes = plt.subplots(2, 2, figsize=(20, 16))
@@ -695,7 +703,7 @@ def create_latency_token_plots(df_tokens, model_name, analysis_name, start_time,
     plt.tight_layout(rect=[0, 0, 1, 0.88])
 
     # Save high-resolution plots
-    filename_base = os.path.join(png_dir, f'latency_vs_tokens_{safe_chain_name}_{generation_time}')
+    filename_base = os.path.join(png_dir, f'latency_vs_tokens_{safe_agent_name}_{generation_time}')
 
     # Save as high-resolution PNG (4K equivalent)
     plt.savefig(f'{filename_base}_4K.png', dpi=400, bbox_inches='tight', facecolor='white')
@@ -704,10 +712,10 @@ def create_latency_token_plots(df_tokens, model_name, analysis_name, start_time,
     if save_to_pdf:
         save_to_pdf.savefig(fig, bbox_inches='tight', facecolor='white')
 
-def create_hourly_analysis_with_weekday(df_model, model_name, start_time, end_time, generation_time, save_to_pdf=None):
+def create_hourly_analysis_with_weekday(df_model, analysis_name, start_time, end_time, generation_time, save_to_pdf=None):
     """Create enhanced hourly analysis differentiated by working vs non-working days"""
     if df_model.empty:
-        print(f"No data available for {model_name}")
+        print(f"No data available for {analysis_name}")
         return
 
     # Add day of week information
@@ -724,7 +732,7 @@ def create_hourly_analysis_with_weekday(df_model, model_name, start_time, end_ti
     add_page_header(fig, start_time, end_time, generation_time,
                     f" - Hourly Analysis by Day Type")
 
-    fig.suptitle(f'Latency Distribution by Hour and Day Type - {model_name}',
+    fig.suptitle(f'Latency Distribution by Hour and Day Type - {analysis_name}',
                  fontsize=16, fontweight='bold', y=0.95)
 
     # Separate data by working vs non-working days
@@ -925,7 +933,7 @@ def create_hourly_analysis_with_weekday(df_model, model_name, start_time, end_ti
     plt.tight_layout(rect=[0, 0, 1, 0.92])
 
     # Save the plot
-    safe_model_name = model_name.replace("-", "_").replace(".", "_")
+    safe_model_name = analysis_name.replace("-", "_").replace(".", "_")
     filename = os.path.join(png_dir, f'hourly_weekday_analysis_{safe_model_name}_{generation_time}')
 
     plt.savefig(f'{filename}.png', dpi=300, bbox_inches='tight', facecolor='white')
@@ -1066,25 +1074,25 @@ def safe_polyfit(x, y, degree=1):
         print(f"Warning: Could not fit polynomial trend line: {e}")
         return None, None
 
-def analyze_concurrent_requests(df_model, model_name, generation_time, bucket_seconds=300, method='start_time', save_to_pdf=None):
+def analyze_concurrent_requests(df_model, analysis_name, generation_time, bucket_seconds=300, method='start_time', save_to_pdf=None):
     """
     Analyze concurrent request patterns and their impact on response times
 
     Args:
         df_model: DataFrame with request data
-        model_name: Name of the model being analyzed
+        analysis_name: Name of the model/agent being analyzed
         bucket_seconds: Size of time buckets in seconds
-        method: 'start_time' (faster, use request start time only) or 'overlap' (check overlapping execution)
+        method: 'start_time' (faster, use request start time only) or 'overlap' (check for overlapping execution)
     """
 
     print(f"\n{'='*60}")
-    print(f"CONCURRENT REQUEST ANALYSIS FOR MODEL: {model_name}")
+    print(f"CONCURRENT REQUEST ANALYSIS FOR: {analysis_name}")
     print(f"Time bucket size: {bucket_seconds} seconds ({bucket_seconds//60}min {bucket_seconds%60}s)")
     print(f"Bucket method: {method}")
     print(f"{'='*60}")
 
     if df_model.empty:
-        print("No data found for this model.")
+        print("No data found for this analysis.")
         return None
 
     # Calculate request start and end times
@@ -1195,7 +1203,7 @@ def analyze_concurrent_requests(df_model, model_name, generation_time, bucket_se
     # Create visualizations
     fig, axes = plt.subplots(2, 3, figsize=(20, 12))
     bucket_label = f'{bucket_seconds}s ({bucket_seconds//60}min {bucket_seconds%60}s)' if bucket_seconds >= 60 else f'{bucket_seconds}s'
-    fig.suptitle(f'{request_label.title()} Analysis - {model_name}\n{bucket_label} buckets, {method} method', fontsize=16, fontweight='bold')
+    fig.suptitle(f'{request_label.title()} Analysis - {analysis_name}\n{bucket_label} buckets, {method} method', fontsize=16, fontweight='bold')
 
     # Plot 1: Request count over time
     axes[0, 0].plot(df_buckets['bucket_start'], df_buckets['request_count'], marker='o', linewidth=2, markersize=4)
@@ -1279,7 +1287,7 @@ def analyze_concurrent_requests(df_model, model_name, generation_time, bucket_se
     plt.tight_layout()
 
     # Save the plot
-    safe_model_name = model_name.replace("-", "_").replace(".", "_")
+    safe_model_name = analysis_name.replace("-", "_").replace(".", "_")
     method_suffix = "start" if method == 'start_time' else "overlap"
 
     if save_to_pdf:
@@ -1303,7 +1311,7 @@ def analyze_concurrent_requests(df_model, model_name, generation_time, bucket_se
         print()
 
     # Key insights
-    print(f"\n--- Key Insights for {model_name} ({bucket_seconds}s buckets, {method} method) ---")
+    print(f"\n--- Key Insights for {analysis_name} ({bucket_seconds}s buckets, {method} method) ---")
 
     # Request load insights
     high_load_threshold = df_buckets['request_count'].quantile(0.9)
@@ -1344,9 +1352,9 @@ def analyze_concurrent_requests(df_model, model_name, generation_time, bucket_se
     return df_buckets
 
 def analyze_model_data(df_model, analysis_name, start_filter_timestamp, end_filter_timestamp, generation_time, save_to_pdf=None):
-    """Generate comprehensive analysis for a specific model"""
+    """Generate comprehensive analysis for a specific model/agent"""
     if df_model.empty:
-        print("No data found for this model.")
+        print("No data found for this analysis.")
         return
 
     # === DIAGNOSTIC CODE ===
