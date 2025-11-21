@@ -13,7 +13,7 @@ from google.cloud import bigquery
 from matplotlib.backends.backend_pdf import PdfPages
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 
 warnings.filterwarnings('ignore')
 
@@ -537,6 +537,11 @@ def create_model_pdf(model_name, df_model, start_time, end_time, bucket_method, 
             df_tokens = df_agent.dropna(subset=['output_tokens']) if 'output_tokens' in df_agent.columns else None
             if df_tokens is not None and len(df_tokens) > 0:
                 create_latency_token_plots(df_tokens, model_name, analysis_name, start_time, end_time, generation_time, save_to_pdf=pdf)
+            
+            # Input token plots (latency vs input_tokens with output_tokens as color map)
+            df_input_tokens = df_agent.dropna(subset=['input_tokens']) if 'input_tokens' in df_agent.columns else None
+            if df_input_tokens is not None and len(df_input_tokens) > 0:
+                create_latency_input_token_plots(df_input_tokens, model_name, analysis_name, start_time, end_time, generation_time, save_to_pdf=pdf)
 
             # Hourly analysis
             create_hourly_analysis_with_weekday(df_agent, analysis_name, start_time, end_time, generation_time, save_to_pdf=pdf)
@@ -704,6 +709,144 @@ def create_latency_token_plots(df_tokens, model_name, analysis_name, start_time,
 
     # Save high-resolution plots
     filename_base = os.path.join(png_dir, f'latency_vs_tokens_{safe_agent_name}_{generation_time}')
+
+    # Save as high-resolution PNG (4K equivalent)
+    plt.savefig(f'{filename_base}_4K.png', dpi=400, bbox_inches='tight', facecolor='white')
+    plt.savefig(f'{filename_base}.png', dpi=300, bbox_inches='tight', facecolor='white')
+
+    if save_to_pdf:
+        save_to_pdf.savefig(fig, bbox_inches='tight', facecolor='white')
+
+def create_latency_input_token_plots(df_tokens, model_name, analysis_name, start_time, end_time, generation_time, save_to_pdf=None):
+    """Create standalone high-resolution latency vs input token plots with multiple scales"""
+    if df_tokens is None or len(df_tokens) == 0:
+        print(f"No token data available for {analysis_name}")
+        return
+
+    # Filter positive tokens for log scale
+    df_tokens_positive = df_tokens[df_tokens['input_tokens'] > 0].copy()
+    if len(df_tokens_positive) == 0:
+        print(f"No positive input token data available for {analysis_name}")
+        return
+
+    # Create color mapping based on output tokens
+    output_tokens_available = df_tokens_positive['output_tokens'].notna().any()
+    if output_tokens_available:
+        color_data = df_tokens_positive['output_tokens']
+        color_label = 'Output Tokens'
+        color_map = 'viridis'  # Good color map for output tokens
+    else:
+        color_data = df_tokens_positive['latency_seconds']
+        color_label = 'Latency (seconds)'
+        color_map = 'plasma'
+
+    # Calculate correlation
+    token_latency_corr = np.corrcoef(df_tokens_positive['input_tokens'],
+                                     df_tokens_positive['latency_seconds'])[0, 1]
+
+    safe_agent_name = analysis_name.replace("-", "_").replace(".", "_").replace(" ", "_")
+
+    # Create figure with 2x2 subplots for different scale combinations
+    fig, axes = plt.subplots(2, 2, figsize=(20, 16))
+
+    # Add page header
+    add_page_header(fig, start_time, end_time, generation_time,
+                    f" - Latency vs Input Tokens Analysis - "
+                    f"{analysis_name}")
+
+    fig.suptitle(f'Latency vs Input Token Count Analysis -'
+                 f'{analysis_name}\n'
+                 f'Correlation: {token_latency_corr:.3f} | Total Requests: {len(df_tokens_positive):,}',
+                 fontsize=16, fontweight='bold', y=0.92)
+
+    # Plot configurations: (x_scale, y_scale, title_suffix)
+    plot_configs = [
+        ('linear', 'linear', 'Linear-Linear'),
+        ('log', 'linear', 'Log-Linear'),
+        ('linear', 'log', 'Linear-Log'),
+        ('log', 'log', 'Log-Log')
+    ]
+
+    for idx, (x_scale, y_scale, title_suffix) in enumerate(plot_configs):
+        ax = axes[idx // 2, idx % 2]
+
+        # Create scatter plot with smaller dots
+        scatter = ax.scatter(df_tokens_positive['input_tokens'],
+                             df_tokens_positive['latency_seconds'],
+                             c=color_data, cmap=color_map, alpha=0.6, s=8,  # Smaller dots (s=8)
+                             edgecolors='black', linewidth=0.1)
+
+        # Set scales
+        if x_scale == 'log':
+            ax.set_xscale('log')
+        if y_scale == 'log':
+            ax.set_yscale('log')
+
+        # Add colorbar
+        cbar = plt.colorbar(scatter, ax=ax)
+        cbar.set_label(color_label, fontsize=10)
+
+        # Labels and title
+        ax.set_xlabel(f'Input Token Count ({x_scale.title()} Scale)', fontsize=12)
+        ax.set_ylabel(f'Latency ({y_scale.title()} Scale)', fontsize=12)
+        ax.set_title(f'{title_suffix} Scale\nCorr: {token_latency_corr:.3f}', fontsize=14, fontweight='bold')
+        ax.grid(True, alpha=0.3)
+
+        # Add trend line (handle different scales appropriately)
+        try:
+            if x_scale == 'log' and y_scale == 'log':
+                # Log-log: use log of both variables
+                log_x = np.log10(df_tokens_positive['input_tokens'])
+                log_y = np.log10(df_tokens_positive['latency_seconds'])
+                z, p = safe_polyfit(log_x, log_y)
+                if z is not None:
+                    x_trend = np.logspace(np.log10(df_tokens_positive['input_tokens'].min()),
+                                          np.log10(df_tokens_positive['input_tokens'].max()), 100)
+                    y_trend = 10**(z[0] * np.log10(x_trend) + z[1])
+                    ax.plot(x_trend, y_trend, "r--", alpha=0.8, linewidth=2)
+            elif x_scale == 'log':
+                # Log-linear: use log of x
+                log_x = np.log10(df_tokens_positive['input_tokens'])
+                z, p = safe_polyfit(log_x, df_tokens_positive['latency_seconds'])
+                if z is not None:
+                    x_trend = np.logspace(np.log10(df_tokens_positive['input_tokens'].min()),
+                                          np.log10(df_tokens_positive['input_tokens'].max()), 100)
+                    y_trend = z[0] * np.log10(x_trend) + z[1]
+                    ax.plot(x_trend, y_trend, "r--", alpha=0.8, linewidth=2)
+            elif y_scale == 'log':
+                # Linear-log: use log of y
+                log_y = np.log10(df_tokens_positive['latency_seconds'])
+                z, p = safe_polyfit(df_tokens_positive['input_tokens'], log_y)
+                if z is not None:
+                    x_trend = np.linspace(df_tokens_positive['input_tokens'].min(),
+                                          df_tokens_positive['input_tokens'].max(), 100)
+                    y_trend = 10**(z[0] * x_trend + z[1])
+                    ax.plot(x_trend, y_trend, "r--", alpha=0.8, linewidth=2)
+            else:
+                # Linear-linear: standard approach
+                z, p = safe_polyfit(df_tokens_positive['input_tokens'],
+                                    df_tokens_positive['latency_seconds'])
+                if z is not None and p is not None:
+                    ax.plot(df_tokens_positive['input_tokens'],
+                            p(df_tokens_positive['input_tokens']),
+                            "r--", alpha=0.8, linewidth=2)
+        except Exception as e:
+            print(f"Could not add trend line for {title_suffix}: {e}")
+
+        # Add statistics text box
+        stats_text = f'N: {len(df_tokens_positive):,}\n'
+        stats_text += f'Input tokens: {df_tokens_positive["input_tokens"].min():.0f}-{df_tokens_positive["input_tokens"].max():.0f}\n'
+        if output_tokens_available:
+            stats_text += f'Output tokens: {df_tokens_positive["output_tokens"].min():.0f}-{df_tokens_positive["output_tokens"].max():.0f}\n'
+        stats_text += f'Latency: {df_tokens_positive["latency_seconds"].min():.2f}-{df_tokens_positive["latency_seconds"].max():.2f}s'
+
+        ax.text(0.02, 0.98, stats_text, transform=ax.transAxes, fontsize=9,
+                verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+
+    plt.tight_layout(rect=[0, 0, 1, 0.88])
+
+    # Save high-resolution plots
+    filename_base = os.path.join(png_dir, f'latency_vs_input_tokens_{safe_agent_name}_{generation_time}')
 
     # Save as high-resolution PNG (4K equivalent)
     plt.savefig(f'{filename_base}_4K.png', dpi=400, bbox_inches='tight', facecolor='white')

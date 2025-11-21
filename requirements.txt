@@ -9,3 +9,5 @@ google-cloud-storage
 pandas
 scipy
 google-cloud-resource-manager
+google-auth
+python-dotenv
