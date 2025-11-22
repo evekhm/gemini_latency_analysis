@@ -204,6 +204,11 @@ def main():
         token_data = df_gemini['full_response_json'].apply(extract_token_counts)
         df_gemini[['input_tokens', 'output_tokens', 'total_tokens']] = pd.DataFrame(token_data.tolist(), index=df_gemini.index)
         df_gemini['model_name'] = df_gemini['model'].apply(extract_model_name)
+        
+        # Calculate combined output + thought tokens
+        df_gemini['output_thought_tokens'] = df_gemini['output_token_count'].fillna(0) + df_gemini['thoughts_token_count'].fillna(0)
+        # Replace 0 with NaN for proper filtering later
+        df_gemini.loc[df_gemini['output_thought_tokens'] == 0, 'output_thought_tokens'] = np.nan
 
         # Print overall summary
         print(f"\n--- OVERALL SUMMARY ---")
@@ -354,32 +359,27 @@ def create_model_agent_summary_table(df_model, model_name, start_filter_timestam
         print(f"  Range: {row['Min Latency (s)']:.3f}s - {row['Max Latency (s)']:.3f}s")
         print(f"  P95: {row['P95 Latency (s)']:.3f}s, P99: {row['P99 Latency (s)']:.3f}s")
 
-    # Create visualization
-    fig = plt.figure(figsize=(20, 12))
+    # Calculate dynamic figure height based on number of agents
+    # Base height + additional height per agent row
+    num_agents = len(df_stats)
+    base_height = 8
+    height_per_agent = 0.6  # Increased from implicit smaller value
+    table_height = base_height + (num_agents * height_per_agent)
+    total_fig_height = max(12, table_height + 8)  # Ensure minimum height, add space for charts
+    
+    # Create visualization with dynamic height
+    fig = plt.figure(figsize=(20, total_fig_height))
 
-    # Create custom grid layout
-    gs = fig.add_gridspec(2, 2, height_ratios=[1, 1])
-
-    # Add page header
-    add_page_header(fig, start_filter_timestamp, end_filter_timestamp, generation_time,
-                    f"Model: {model_name}")
-    # Add page header
-    add_page_header(fig, start_filter_timestamp, end_filter_timestamp, generation_time,
-                    f"Model: {model_name}")
-
-    fig.suptitle(f'Agent Summary Analysis - Model: {model_name}', fontsize=16, fontweight='bold', y=0.92)
-
-    # Plot 1: Summary statistics table (now first and spans full width)
-    fig = plt.figure(figsize=(20, 12))
-
-    # Create custom grid layout
-    gs = fig.add_gridspec(2, 2, height_ratios=[1, 1])
+    # Create custom grid layout with dynamic height ratios
+    # Give more space to the table if there are many agents
+    table_ratio = max(1.5, num_agents * 0.15)  # Scale table space with number of agents
+    gs = fig.add_gridspec(2, 2, height_ratios=[table_ratio, 1])
 
     # Add page header
     add_page_header(fig, start_filter_timestamp, end_filter_timestamp, generation_time,
                     f"Model: {model_name}")
 
-    fig.suptitle(f'Agent Summary Analysis - Model: {model_name}', fontsize=16, fontweight='bold', y=0.92)
+    fig.suptitle(f'Agent Summary Analysis - Model: {model_name}', fontsize=16, fontweight='bold', y=0.95)
 
     # Plot 1: Summary statistics table (now first and spans full width)
     ax1 = fig.add_subplot(gs[0, :])  # Spans both columns of first row
@@ -423,8 +423,14 @@ def create_model_agent_summary_table(df_model, model_name, start_filter_timestam
     table = ax1.table(cellText=table_data[1:], colLabels=table_data[0],
                       cellLoc='center', loc='center', colWidths=[0.35, 0.13, 0.13, 0.13, 0.13, 0.13])
     table.auto_set_font_size(False)
-    table.set_fontsize(10)
-    table.scale(1, 2.5)  # Only increase height, not width
+    
+    # Dynamic font size based on number of agents
+    font_size = max(8, min(11, 12 - num_agents * 0.1))  # Scale down font slightly for many agents
+    table.set_fontsize(font_size)
+    
+    # Dynamic row height scaling - more aggressive scaling for many agents
+    row_scale = max(3.0, min(5.0, 3.0 + (num_agents * 0.1)))  # Scale up row height with more agents
+    table.scale(1, row_scale)
 
     # Style the header
     for i in range(len(table_data[0])):
@@ -542,6 +548,11 @@ def create_model_pdf(model_name, df_model, start_time, end_time, bucket_method, 
             df_input_tokens = df_agent.dropna(subset=['input_tokens']) if 'input_tokens' in df_agent.columns else None
             if df_input_tokens is not None and len(df_input_tokens) > 0:
                 create_latency_input_token_plots(df_input_tokens, model_name, analysis_name, start_time, end_time, generation_time, save_to_pdf=pdf)
+            
+            # Output+Thought token plots (latency vs output+thought tokens with input_tokens as color map)
+            df_output_thought_tokens = df_agent.dropna(subset=['output_thought_tokens']) if 'output_thought_tokens' in df_agent.columns else None
+            if df_output_thought_tokens is not None and len(df_output_thought_tokens) > 0:
+                create_latency_output_thought_token_plots(df_output_thought_tokens, model_name, analysis_name, start_time, end_time, generation_time, save_to_pdf=pdf)
 
             # Hourly analysis
             create_hourly_analysis_with_weekday(df_agent, analysis_name, start_time, end_time, generation_time, save_to_pdf=pdf)
@@ -847,6 +858,144 @@ def create_latency_input_token_plots(df_tokens, model_name, analysis_name, start
 
     # Save high-resolution plots
     filename_base = os.path.join(png_dir, f'latency_vs_input_tokens_{safe_agent_name}_{generation_time}')
+
+    # Save as high-resolution PNG (4K equivalent)
+    plt.savefig(f'{filename_base}_4K.png', dpi=400, bbox_inches='tight', facecolor='white')
+    plt.savefig(f'{filename_base}.png', dpi=300, bbox_inches='tight', facecolor='white')
+
+    if save_to_pdf:
+        save_to_pdf.savefig(fig, bbox_inches='tight', facecolor='white')
+
+def create_latency_output_thought_token_plots(df_tokens, model_name, analysis_name, start_time, end_time, generation_time, save_to_pdf=None):
+    """Create standalone high-resolution latency vs output+thought token plots with multiple scales"""
+    if df_tokens is None or len(df_tokens) == 0:
+        print(f"No token data available for {analysis_name}")
+        return
+
+    # Filter positive tokens for log scale
+    df_tokens_positive = df_tokens[df_tokens['output_thought_tokens'] > 0].copy()
+    if len(df_tokens_positive) == 0:
+        print(f"No positive output+thought token data available for {analysis_name}")
+        return
+
+    # Create color mapping based on input tokens
+    input_tokens_available = df_tokens_positive['input_tokens'].notna().any()
+    if input_tokens_available:
+        color_data = df_tokens_positive['input_tokens']
+        color_label = 'Input Tokens'
+        color_map = 'plasma'  # Good color map for input tokens
+    else:
+        color_data = df_tokens_positive['latency_seconds']
+        color_label = 'Latency (seconds)'
+        color_map = 'viridis'
+
+    # Calculate correlation
+    token_latency_corr = np.corrcoef(df_tokens_positive['output_thought_tokens'],
+                                     df_tokens_positive['latency_seconds'])[0, 1]
+
+    safe_agent_name = analysis_name.replace("-", "_").replace(".", "_").replace(" ", "_")
+
+    # Create figure with 2x2 subplots for different scale combinations
+    fig, axes = plt.subplots(2, 2, figsize=(20, 16))
+
+    # Add page header
+    add_page_header(fig, start_time, end_time, generation_time,
+                    f" - Latency vs Output+Thought Tokens Analysis - "
+                    f"{analysis_name}")
+
+    fig.suptitle(f'Latency vs Output+Thought Token Count Analysis -'
+                 f'{analysis_name}\n'
+                 f'Correlation: {token_latency_corr:.3f} | Total Requests: {len(df_tokens_positive):,}',
+                 fontsize=16, fontweight='bold', y=0.92)
+
+    # Plot configurations: (x_scale, y_scale, title_suffix)
+    plot_configs = [
+        ('linear', 'linear', 'Linear-Linear'),
+        ('log', 'linear', 'Log-Linear'),
+        ('linear', 'log', 'Linear-Log'),
+        ('log', 'log', 'Log-Log')
+    ]
+
+    for idx, (x_scale, y_scale, title_suffix) in enumerate(plot_configs):
+        ax = axes[idx // 2, idx % 2]
+
+        # Create scatter plot with smaller dots
+        scatter = ax.scatter(df_tokens_positive['output_thought_tokens'],
+                             df_tokens_positive['latency_seconds'],
+                             c=color_data, cmap=color_map, alpha=0.6, s=8,  # Smaller dots (s=8)
+                             edgecolors='black', linewidth=0.1)
+
+        # Set scales
+        if x_scale == 'log':
+            ax.set_xscale('log')
+        if y_scale == 'log':
+            ax.set_yscale('log')
+
+        # Add colorbar
+        cbar = plt.colorbar(scatter, ax=ax)
+        cbar.set_label(color_label, fontsize=10)
+
+        # Labels and title
+        ax.set_xlabel(f'Output+Thought Token Count ({x_scale.title()} Scale)', fontsize=12)
+        ax.set_ylabel(f'Latency ({y_scale.title()} Scale)', fontsize=12)
+        ax.set_title(f'{title_suffix} Scale\nCorr: {token_latency_corr:.3f}', fontsize=14, fontweight='bold')
+        ax.grid(True, alpha=0.3)
+
+        # Add trend line (handle different scales appropriately)
+        try:
+            if x_scale == 'log' and y_scale == 'log':
+                # Log-log: use log of both variables
+                log_x = np.log10(df_tokens_positive['output_thought_tokens'])
+                log_y = np.log10(df_tokens_positive['latency_seconds'])
+                z, p = safe_polyfit(log_x, log_y)
+                if z is not None:
+                    x_trend = np.logspace(np.log10(df_tokens_positive['output_thought_tokens'].min()),
+                                          np.log10(df_tokens_positive['output_thought_tokens'].max()), 100)
+                    y_trend = 10**(z[0] * np.log10(x_trend) + z[1])
+                    ax.plot(x_trend, y_trend, "r--", alpha=0.8, linewidth=2)
+            elif x_scale == 'log':
+                # Log-linear: use log of x
+                log_x = np.log10(df_tokens_positive['output_thought_tokens'])
+                z, p = safe_polyfit(log_x, df_tokens_positive['latency_seconds'])
+                if z is not None:
+                    x_trend = np.logspace(np.log10(df_tokens_positive['output_thought_tokens'].min()),
+                                          np.log10(df_tokens_positive['output_thought_tokens'].max()), 100)
+                    y_trend = z[0] * np.log10(x_trend) + z[1]
+                    ax.plot(x_trend, y_trend, "r--", alpha=0.8, linewidth=2)
+            elif y_scale == 'log':
+                # Linear-log: use log of y
+                log_y = np.log10(df_tokens_positive['latency_seconds'])
+                z, p = safe_polyfit(df_tokens_positive['output_thought_tokens'], log_y)
+                if z is not None:
+                    x_trend = np.linspace(df_tokens_positive['output_thought_tokens'].min(),
+                                          df_tokens_positive['output_thought_tokens'].max(), 100)
+                    y_trend = 10**(z[0] * x_trend + z[1])
+                    ax.plot(x_trend, y_trend, "r--", alpha=0.8, linewidth=2)
+            else:
+                # Linear-linear: standard approach
+                z, p = safe_polyfit(df_tokens_positive['output_thought_tokens'],
+                                    df_tokens_positive['latency_seconds'])
+                if z is not None and p is not None:
+                    ax.plot(df_tokens_positive['output_thought_tokens'],
+                            p(df_tokens_positive['output_thought_tokens']),
+                            "r--", alpha=0.8, linewidth=2)
+        except Exception as e:
+            print(f"Could not add trend line for {title_suffix}: {e}")
+
+        # Add statistics text box
+        stats_text = f'N: {len(df_tokens_positive):,}\n'
+        if input_tokens_available:
+            stats_text += f'Input tokens: {df_tokens_positive["input_tokens"].min():.0f}-{df_tokens_positive["input_tokens"].max():.0f}\n'
+        stats_text += f'Output+Thought tokens: {df_tokens_positive["output_thought_tokens"].min():.0f}-{df_tokens_positive["output_thought_tokens"].max():.0f}\n'
+        stats_text += f'Latency: {df_tokens_positive["latency_seconds"].min():.2f}-{df_tokens_positive["latency_seconds"].max():.2f}s'
+
+        ax.text(0.02, 0.98, stats_text, transform=ax.transAxes, fontsize=9,
+                verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+
+    plt.tight_layout(rect=[0, 0, 1, 0.88])
+
+    # Save high-resolution plots
+    filename_base = os.path.join(png_dir, f'latency_vs_output_thought_tokens_{safe_agent_name}_{generation_time}')
 
     # Save as high-resolution PNG (4K equivalent)
     plt.savefig(f'{filename_base}_4K.png', dpi=400, bbox_inches='tight', facecolor='white')
