@@ -1,3 +1,33 @@
+<!-- TOC -->
+* [Latency Analysis](#latency-analysis)
+  * [Overview](#overview)
+  * [Prerequisites](#prerequisites)
+    * [Enable Gemini Requests Logging](#enable-gemini-requests-logging)
+    * [Install libraries](#install-libraries)
+    * [Set environment variables](#set-environment-variables)
+  * [Generate Analysis of Gemini Level Logs](#generate-analysis-of-gemini-level-logs)
+  * [Generated Charts and Visualizations](#generated-charts-and-visualizations)
+    * [1. Agent Summary Analysis](#1-agent-summary-analysis)
+    * [2. Latency Distribution Analysis](#2-latency-distribution-analysis)
+    * [3. Latency vs Output Tokens](#3-latency-vs-output-tokens)
+    * [4. Latency vs Input Tokens](#4-latency-vs-input-tokens)
+    * [5. Latency vs Output+Thought Tokens (NEW)](#5-latency-vs-outputthought-tokens-new)
+    * [6. Hourly Analysis by Day Type](#6-hourly-analysis-by-day-type)
+    * [Output Files](#output-files)
+  * [Latency Analyzer Agent](#latency-analyzer-agent)
+    * [Features](#features)
+    * [Analysis Tools](#analysis-tools)
+    * [Deep Research Mode](#deep-research-mode)
+    * [Usage](#usage)
+    * [Environment Setup](#environment-setup)
+    * [How It Works](#how-it-works)
+  * [Slow Query Analyzer Agent](#slow-query-analyzer-agent)
+    * [Features](#features-1)
+    * [Environment Setup](#environment-setup-1)
+    * [How It Works](#how-it-works-1)
+    * [Usage](#usage-1)
+    * [Verification](#verification)
+<!-- TOC -->
 # Latency Analysis
 
 ## Overview
