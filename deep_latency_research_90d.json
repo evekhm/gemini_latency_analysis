@@ -1,0 +1,6 @@
+{
+    "state": {},
+    "queries": [
+        "Perform a comprehensive deep research analysis of latency patterns for the last 90 days. Test all hypotheses systematically: 1) Token size drives latency (especially output+thought tokens correlation), 2) Agent-specific performance issues, 3) Time-based patterns and degradation trends, 4) Clustering patterns in slow queries, 5) Outlier behavior and common characteristics. For each hypothesis, provide statistical evidence, correlation coefficients, quartile analysis, and clustering breakdown. Identify the dominant patterns, most problematic agents, and cost drivers. At the end, provide a prioritized list of actionable recommendations with expected impact, and suggest specific follow-up questions for deeper investigation. Create a complete report with executive summary, detailed findings, hypothesis testing results, and next steps."
+    ]
+}

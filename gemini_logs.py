@@ -484,7 +484,10 @@ def create_model_agent_summary_table(df_model, model_name, start_filter_timestam
         ax3.text(bar.get_x() + bar.get_width()/2., bar.get_height() + std_val + max(df_stats['Mean Latency (s)']) * 0.01,
                  f'{mean_val:.2f}s', ha='center', va='bottom', fontsize=10)
 
-    plt.tight_layout(rect=[0, 0, 1, 0.88])
+    # Adjust tight_layout based on dynamic figure height
+    # Calculate appropriate top margin based on figure height
+    top_margin = 1 - (2.0 / total_fig_height)  # Reserve ~2 inches for header/title
+    plt.tight_layout(rect=[0, 0, 1, top_margin])
 
     if save_to_pdf:
         save_to_pdf.savefig(fig, bbox_inches='tight', facecolor='white')

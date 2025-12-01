@@ -11,3 +11,5 @@ scipy
 google-cloud-resource-manager
 google-auth
 python-dotenv
+google-adknumpy
+pandas

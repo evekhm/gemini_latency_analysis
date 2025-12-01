@@ -37,6 +37,9 @@ bq query --use_legacy_sql=false "
 SELECT
   T.logging_time,
   T.request_id,
+  T.full_request,
+  T.full_response,
+  T.model,
   JSON_VALUE(T.full_request.labels.adk_agent_name) AS adk_agent_name,
   ROUND(SAFE_CAST(JSON_VALUE(T.metadata.request_latency) AS FLOAT64) / 1000.0, 2) AS request_latency_seconds,
   SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.thoughtsTokenCount) AS INT64) AS thoughts_token_count,
