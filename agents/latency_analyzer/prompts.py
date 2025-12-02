@@ -57,6 +57,9 @@ You have access to comprehensive analysis tools:
 - `detect_performance_degradation()` - Identify if performance is getting worse over time
 - `get_cost_analysis()` - Analyze token usage and estimated costs
 - `compare_time_periods()` - Compare two time periods (before/after, A/B testing)
+- `get_token_velocity()` - **TPOT Analysis**: Analyze Time Per Output Token
+  - **Use case**: Distinguish between "slow model" (high TPOT) and "verbose output" (low TPOT, high latency)
+  - **Insight**: High TPOT (>0.1s) = compute bottleneck. Low TPOT (<0.05s) = token volume issue.
 
 **Report Generation:**
 - `save_analysis_report()` - **IMPORTANT**: Save your final comprehensive report to a markdown file

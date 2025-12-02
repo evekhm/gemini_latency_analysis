@@ -24,7 +24,9 @@ from .utils import (
     fetch_slow_queries,
     fetch_single_query,
     # Report generation
-    save_analysis_report
+    save_analysis_report,
+    # New TPOT tool
+    get_token_velocity
 )
 
 __dir__ = os.path.dirname(__file__)
@@ -61,7 +63,9 @@ latency_analyzer = LlmAgent(
         fetch_slow_queries,  # Fetch metadata for slowest queries
         fetch_single_query,  # Fetch full details for a specific query
         # Report generation
-        save_analysis_report  # Save final report to markdown file
+        save_analysis_report,  # Save final report to markdown file
+        # TPOT Analysis
+        get_token_velocity   # Analyze generation speed vs volume
     ],
     generate_content_config=types.GenerateContentConfig(
         temperature=0,

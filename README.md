@@ -141,9 +141,11 @@ The `latency_analyzer` agent is a comprehensive AI-powered tool that automates l
 - **Automated Insights**: LLM-powered pattern detection and root cause analysis
 - **Hypothesis-Driven Research**: Systematic testing of performance hypotheses
 - **Cost Tracking**: Token usage analysis and cost estimation
-- **Trend Detection**: Identifies performance degradation over time
+- **Performance Degradation Detection**: Identifies if latency is increasing over time using moving averages.
+- **TPOT Analysis**: Calculates Time Per Output Token to distinguish between compute bottlenecks and verbose output.
+- **Cost Analysis**: Estimates token costs and identifies expensive query patterns.
+- **Individual Query Deep-Dive**: Fetches full details of specific slow queries for root cause analysis.
 - **Agent Comparison**: Compares performance across different agents
-- **Individual Query Analysis**: Deep-dive into specific slow queries with full request/response content
 
 ### Analysis Tools
 
@@ -200,6 +202,12 @@ Alternatively, run it manually:
 cd agents
 adk run --replay ../autonomous_analysis_90d.json latency_analyzer
 ```
+
+**Output Files:**
+
+The agent generates comprehensive markdown reports in the `reports/` directory:
+- **Format:** `reports/latency_analysis_report_<timestamp>.md`
+- **Content:** Executive summary, hypothesis testing results, key findings, root causes, and prioritized recommendations.
 
 **Alternative: Step-by-Step Analysis:**
 

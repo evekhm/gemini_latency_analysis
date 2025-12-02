@@ -1550,6 +1550,106 @@ def fetch_single_query(request_id: str) -> str:
         return json.dumps({"error": error_msg})
 
 
+def get_token_velocity(
+    time_range: str = "7d",
+    model_name: Optional[str] = None
+) -> str:
+    """
+    Analyze Time Per Output Token (TPOT) to distinguish between slow generation and verbose output.
+    
+    TPOT = Latency / Output Tokens
+    
+    High TPOT (> 0.1s/token) indicates compute bottlenecks (model struggling).
+    Low TPOT (< 0.05s/token) but high latency indicates verbose output (generating too much text).
+    """
+    try:
+        start_time, end_time = parse_time_range(time_range)
+        
+        where_clauses = [
+            f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
+            "T.full_response IS NOT NULL",
+            "JSON_VALUE(T.metadata.request_latency) IS NOT NULL"
+        ]
+        
+        if model_name:
+            where_clauses.append(f"T.model LIKE '%{model_name}%'")
+            
+        where_clause = " AND ".join(where_clauses)
+        
+        query = f"""
+        SELECT
+          CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000 AS latency,
+          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) AS output_tokens
+        FROM
+          `{PROJECT_ID}.{DATASET}.{GEMINI_LOG_TABLE}` AS T
+        WHERE
+          {where_clause}
+          AND SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) > 0
+        LIMIT 5000
+        """
+        
+        df = execute_bigquery(query)
+        
+        if df.empty:
+            return json.dumps({"error": "No data found for TPOT analysis"})
+            
+        # Calculate TPOT (seconds per token)
+        df['tpot'] = df['latency'] / df['output_tokens']
+        
+        # Statistics
+        stats = {
+            "avg_tpot": float(df['tpot'].mean()),
+            "median_tpot": float(df['tpot'].median()),
+            "p95_tpot": float(df['tpot'].quantile(0.95)),
+            "min_tpot": float(df['tpot'].min()),
+            "max_tpot": float(df['tpot'].max())
+        }
+        
+        # Categorize requests
+        # Fast generation: < 50ms/token
+        # Normal generation: 50-100ms/token
+        # Slow generation: > 100ms/token
+        df['speed_category'] = pd.cut(
+            df['tpot'], 
+            bins=[0, 0.05, 0.1, float('inf')], 
+            labels=['fast_compute', 'normal_compute', 'slow_compute']
+        )
+        
+        speed_breakdown = df['speed_category'].value_counts(normalize=True).to_dict()
+        
+        # Correlation: Does TPOT correlate with total latency?
+        # If yes, the model is struggling. If no, it's just token volume.
+        tpot_latency_corr = float(df['tpot'].corr(df['latency']))
+        
+        result = {
+            "metadata": {
+                "time_range": f"{start_time} to {end_time}",
+                "data_points": len(df)
+            },
+            "statistics": stats,
+            "speed_breakdown": {k: float(v) for k, v in speed_breakdown.items()},
+            "correlations": {
+                "tpot_vs_latency": tpot_latency_corr,
+                "interpretation": "High correlation means slow compute drives latency. Low correlation means token volume drives latency."
+            },
+            "insights": []
+        }
+        
+        # Generate insights
+        if stats['avg_tpot'] > 0.1:
+            result['insights'].append("High average TPOT (>100ms/token) indicates potential compute bottlenecks or model overload.")
+        elif stats['avg_tpot'] < 0.05:
+            result['insights'].append("Low average TPOT (<50ms/token) indicates efficient generation. High latency is likely due to verbose output.")
+            
+        if speed_breakdown.get('slow_compute', 0) > 0.2:
+            result['insights'].append(f"Significant portion ({speed_breakdown['slow_compute']:.1%}) of requests suffer from slow generation speeds.")
+            
+        return json.dumps(result, cls=AnalysisEncoder)
+        
+    except Exception as e:
+        logging.error(f"Error in get_token_velocity: {str(e)}")
+        return json.dumps({"error": str(e)})
+
 def save_analysis_report(
     report_content: str,
     filename: str = "latency_analysis_report.md"
