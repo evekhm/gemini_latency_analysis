@@ -45,6 +45,14 @@ You have access to comprehensive analysis tools:
 - `get_query_details()` - Get full details for a specific request_id
 - `get_concurrent_request_impact()` - Check if high concurrency degrades performance
 
+**Individual Query Analysis (for token-efficient deep dives):**
+- `fetch_slow_queries()` - **LIGHTWEIGHT**: Fetch only request IDs and latency for top N slowest queries (avoids token limits)
+- `fetch_single_query()` - **DETAILED**: Fetch full request/response content for a specific request_id (use after fetch_slow_queries)
+  - **Use case**: When you need to analyze the actual content of slow queries (prompts, responses, tool calls)
+  - **Pattern**: First call `fetch_slow_queries(10)` to get IDs, then call `fetch_single_query(request_id)` for each one individually
+  - **Benefit**: Avoids exceeding token limits when dealing with massive request/response payloads
+
+
 **Advanced Insights:**
 - `detect_performance_degradation()` - Identify if performance is getting worse over time
 - `get_cost_analysis()` - Analyze token usage and estimated costs

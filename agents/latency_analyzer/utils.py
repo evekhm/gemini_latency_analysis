@@ -1411,3 +1411,128 @@ def analyze_correlation_detailed(
     except Exception as e:
         logging.error(f"Error in analyze_correlation_detailed: {str(e)}")
         return json.dumps({"error": str(e)})
+
+
+def fetch_slow_queries(num_records: int = 10) -> str:
+    """
+    Fetches the top N slowest queries from the BigQuery logs and returns metadata only.
+    
+    This is a lightweight version that returns only request IDs and latency,
+    avoiding token limits when dealing with large request/response payloads.
+    
+    Args:
+        num_records: The number of records to fetch. Defaults to 10.
+        
+    Returns:
+        A JSON string containing the count and list of request IDs with latency.
+    """
+    try:
+        query = f"""
+        SELECT
+          CAST(T.request_id AS STRING) AS request_id,
+          ROUND(SAFE_CAST(JSON_VALUE(T.metadata.request_latency) AS FLOAT64) / 1000.0, 2) AS request_latency_seconds
+        FROM
+          `{PROJECT_ID}.{DATASET}.{GEMINI_LOG_TABLE}` AS T
+        WHERE
+          T.full_request IS NOT NULL
+          AND T.full_response IS NOT NULL
+        ORDER BY
+          request_latency_seconds DESC
+        LIMIT {num_records}
+        """
+        
+        df = execute_bigquery(query)
+        
+        if df.empty:
+            return json.dumps({"error": "No data found"})
+        
+        # Convert results to a list of request IDs
+        request_ids = []
+        for _, row in df.iterrows():
+            request_ids.append({
+                "request_id": str(row["request_id"]),
+                "latency_seconds": float(row["request_latency_seconds"]) if pd.notna(row["request_latency_seconds"]) else 0.0
+            })
+        
+        logging.info(f"Successfully fetched {len(request_ids)} request IDs")
+        return json.dumps({
+            "count": len(request_ids),
+            "requests": request_ids
+        }, cls=AnalysisEncoder)
+    
+    except Exception as e:
+        error_msg = f"Error fetching slow queries: {str(e)}"
+        logging.error(error_msg)
+        return json.dumps({"error": error_msg})
+
+
+def fetch_single_query(request_id: str) -> str:
+    """
+    Fetches a single query's full details by request_id.
+    
+    This allows deep-dive analysis of individual slow queries with full
+    request/response content. Use this after fetch_slow_queries to analyze
+    specific queries one at a time to avoid token limits.
+    
+    Args:
+        request_id: The request ID to fetch.
+        
+    Returns:
+        A JSON string containing the full query details.
+    """
+    try:
+        query = f"""
+        SELECT
+          T.logging_time,
+          CAST(T.request_id AS STRING) AS request_id,
+          T.full_request,
+          T.full_response,
+          T.model,
+          JSON_VALUE(T.full_request.labels.adk_agent_name) AS adk_agent_name,
+          ROUND(SAFE_CAST(JSON_VALUE(T.metadata.request_latency) AS FLOAT64) / 1000.0, 2) AS request_latency_seconds,
+          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.thoughtsTokenCount) AS INT64) AS thoughts_token_count,
+          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) AS output_token_count,
+          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64) AS prompt_token_count,
+          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64) AS total_token_count
+        FROM
+          `{PROJECT_ID}.{DATASET}.{GEMINI_LOG_TABLE}` AS T
+        WHERE
+          CAST(T.request_id AS STRING) = @request_id
+        LIMIT 1
+        """
+        
+        client = bigquery.Client(project=PROJECT_ID)
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("request_id", "STRING", str(request_id))
+            ]
+        )
+        
+        df = client.query(query, job_config=job_config).to_dataframe()
+        
+        if df.empty:
+            return json.dumps({"error": f"No record found for request_id: {request_id}"})
+        
+        row = df.iloc[0]
+        record = {
+            "logging_time": row['logging_time'].isoformat() if pd.notna(row['logging_time']) else None,
+            "request_id": row['request_id'],
+            "full_request": json.loads(row['full_request']) if pd.notna(row['full_request']) else None,
+            "full_response": json.loads(row['full_response']) if pd.notna(row['full_response']) else None,
+            "model": row['model'],
+            "adk_agent_name": row['adk_agent_name'] if pd.notna(row['adk_agent_name']) else None,
+            "request_latency_seconds": float(row['request_latency_seconds']) if pd.notna(row['request_latency_seconds']) else None,
+            "thoughts_token_count": int(row['thoughts_token_count']) if pd.notna(row['thoughts_token_count']) else None,
+            "output_token_count": int(row['output_token_count']) if pd.notna(row['output_token_count']) else None,
+            "prompt_token_count": int(row['prompt_token_count']) if pd.notna(row['prompt_token_count']) else None,
+            "total_token_count": int(row['total_token_count']) if pd.notna(row['total_token_count']) else None
+        }
+        
+        logging.info(f"Successfully fetched query {request_id}")
+        return json.dumps(record, cls=AnalysisEncoder, default=str)
+    
+    except Exception as e:
+        error_msg = f"Error fetching query {request_id}: {str(e)}"
+        logging.error(error_msg)
+        return json.dumps({"error": error_msg})
+

@@ -19,7 +19,10 @@ from .utils import (
     get_cost_analysis,
     compare_time_periods,
     cluster_slow_queries,
-    analyze_correlation_detailed
+    analyze_correlation_detailed,
+    # Import slow query tools from slow_query_analyzer
+    fetch_slow_queries,
+    fetch_single_query
 )
 
 __dir__ = os.path.dirname(__file__)
@@ -28,11 +31,11 @@ load_dotenv(dotenv_path=os.path.join(__dir__, "../../.env"))
 # Get the model from environment variable
 MODEL = os.getenv('MODEL', 'gemini-2.0-flash-thinking-exp')
 
-# Latency Analyzer Agent with all analysis tools
+# Latency Analyzer Agent with all analysis tools (merged with slow_query_analyzer)
 latency_analyzer = LlmAgent(
     name="latency_analyzer",
     model=MODEL,
-    description="Comprehensive LLM latency and performance analyzer. Analyzes BigQuery logs, identifies bottlenecks, detects patterns, and provides actionable optimization recommendations.",
+    description="Comprehensive LLM latency and performance analyzer. Analyzes BigQuery logs, identifies bottlenecks, detects patterns, provides actionable optimization recommendations, and performs deep-dive analysis of individual slow queries.",
     instruction=PROMPT_LATENCY_ANALYZER,
     tools=[
         # Core statistics
@@ -51,7 +54,10 @@ latency_analyzer = LlmAgent(
         # Advanced analysis
         detect_performance_degradation,
         get_cost_analysis,
-        compare_time_periods
+        compare_time_periods,
+        # Individual query analysis (from slow_query_analyzer)
+        fetch_slow_queries,  # Fetch metadata for slowest queries
+        fetch_single_query   # Fetch full details for a specific query
     ],
     generate_content_config=types.GenerateContentConfig(
         temperature=0,

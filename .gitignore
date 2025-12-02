@@ -8,3 +8,6 @@
 /inspect_methods.py
 /agent_attributes.txt
 /.venv/
+/agents/latency_analyzer/__pycache__/
+/agents/slow_query_analyzer/__pycache__/
+/__pycache__/
