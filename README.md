@@ -361,8 +361,8 @@ Analyzes combined impact of output and thought tokens on latency
 - Working vs non-working day comparison
 
 ### Output Files
-- **PDF Report**: `out/complete_analysis_<model_name>__<timestamp>.pdf`
-- **PNG Files**: High-resolution charts in `out/png/` directory (300 DPI and 4K)
+- **PDF Report**: `reports/complete_analysis_<model_name>__<timestamp>.pdf`
+- **PNG Files**: High-resolution charts in `reports/png/` directory (300 DPI and 4K)
 
 ---
 

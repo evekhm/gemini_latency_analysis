@@ -25,7 +25,7 @@ project_id = os.getenv("PROJECT_ID")
 # --- END USER INPUT SECTION ---
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
-plots_dir = os.path.join(script_dir, "out")
+plots_dir = os.path.join(script_dir, "reports")
 png_dir = os.path.join(plots_dir, "png")
 os.makedirs(png_dir, exist_ok=True)
 
