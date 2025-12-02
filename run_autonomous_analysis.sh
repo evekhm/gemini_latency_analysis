@@ -5,6 +5,9 @@
 
 set -e
 
+# Suppress experimental feature warnings
+export PYTHONWARNINGS="ignore::UserWarning"
+
 echo "=========================================="
 echo "Autonomous Latency Analysis (90 days)"
 echo "=========================================="
@@ -20,7 +23,10 @@ echo ""
 echo "Starting autonomous analysis..."
 echo ""
 
-cd agents
+# Get the directory where this script is located
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+cd "$SCRIPT_DIR/agents"
 adk run --replay ../autonomous_analysis_90d.json latency_analyzer
 
 echo ""
