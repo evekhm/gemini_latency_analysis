@@ -27,6 +27,8 @@ class AnalysisEncoder(json.JSONEncoder):
             return int(obj)
         if isinstance(obj, np.floating):
             return float(obj)
+        if isinstance(obj, np.bool_):
+            return bool(obj)
         if pd.isna(obj):
             return None
         return super(AnalysisEncoder, self).default(obj)
