@@ -1354,7 +1354,10 @@ def analyze_correlation_detailed(
         df = execute_bigquery(query)
         
         if df.empty or len(df) < 10:
+            logging.warning(f"Insufficient data for correlation analysis: {len(df) if not df.empty else 0} rows")
             return json.dumps({"error": "Insufficient data for correlation analysis"})
+        
+        logging.info(f"Analyzing correlation for {len(df)} data points")
         
         # Calculate output + thought tokens
         df['output_thought_tokens'] = df['output_tokens'].fillna(0) + df['thought_tokens'].fillna(0)
@@ -1370,6 +1373,7 @@ def analyze_correlation_detailed(
                     "strength": "strong" if abs(corr) > 0.7 else "moderate" if abs(corr) > 0.4 else "weak" if abs(corr) > 0.2 else "negligible",
                     "direction": "positive" if corr > 0 else "negative" if corr < 0 else "none"
                 }
+                logging.info(f"Correlation latency vs {col}: {corr:.3f} ({correlations[f'latency_vs_{col}']['strength']})")
         
         # Find strongest correlation
         strongest = max(correlations.items(), key=lambda x: abs(x[1]['correlation']) if x[1]['correlation'] is not None else 0)
@@ -1378,13 +1382,20 @@ def analyze_correlation_detailed(
         quartile_analysis = {}
         for col in ['output_thought_tokens', 'input_tokens']:
             if df[col].notna().sum() > 10:
-                df[f'{col}_quartile'] = pd.qcut(df[col], q=4, labels=['Q1_low', 'Q2_med_low', 'Q3_med_high', 'Q4_high'], duplicates='drop')
-                quartile_stats = df.groupby(f'{col}_quartile', observed=True)['latency'].agg(['mean', 'median', 'count']).to_dict('index')
-                quartile_analysis[col] = {k: {
-                    "mean_latency": float(v['mean']),
-                    "median_latency": float(v['median']),
-                    "count": int(v['count'])
-                } for k, v in quartile_stats.items()}
+                try:
+                    # Try to create quartiles, but handle cases with insufficient unique values
+                    df[f'{col}_quartile'] = pd.qcut(df[col], q=4, labels=['Q1_low', 'Q2_med_low', 'Q3_med_high', 'Q4_high'], duplicates='drop')
+                    quartile_stats = df.groupby(f'{col}_quartile', observed=True)['latency'].agg(['mean', 'median', 'count']).to_dict('index')
+                    quartile_analysis[col] = {k: {
+                        "mean_latency": float(v['mean']),
+                        "median_latency": float(v['median']),
+                        "count": int(v['count'])
+                    } for k, v in quartile_stats.items()}
+                except (ValueError, TypeError) as e:
+                    # If quartiles can't be created (e.g., too few unique values), skip this column
+                    logging.warning(f"Could not create quartiles for {col}: {str(e)}")
+                    quartile_analysis[col] = {"error": f"Insufficient unique values for quartile analysis: {str(e)}"}
+
         
         result = {
             "metadata": {
@@ -1533,6 +1544,57 @@ def fetch_single_query(request_id: str) -> str:
     
     except Exception as e:
         error_msg = f"Error fetching query {request_id}: {str(e)}"
+        logging.error(error_msg)
+        return json.dumps({"error": error_msg})
+
+
+def save_analysis_report(
+    report_content: str,
+    filename: str = "latency_analysis_report.md"
+) -> str:
+    """
+    Save the analysis report to a markdown file.
+    
+    This tool allows the agent to save its final comprehensive report to a file
+    for easy sharing and documentation.
+    
+    Args:
+        report_content: The markdown-formatted report content to save
+        filename: The filename to save the report as (default: latency_analysis_report.md)
+        
+    Returns:
+        A JSON string confirming the save or reporting an error
+    """
+    try:
+        import os
+        from datetime import datetime
+        
+        # Create reports directory if it doesn't exist
+        reports_dir = os.path.join(os.path.dirname(__file__), "../../reports")
+        os.makedirs(reports_dir, exist_ok=True)
+        
+        # Add timestamp to filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_name = filename.replace(".md", "")
+        timestamped_filename = f"{base_name}_{timestamp}.md"
+        
+        filepath = os.path.join(reports_dir, timestamped_filename)
+        
+        # Write the report
+        with open(filepath, 'w') as f:
+            f.write(report_content)
+        
+        logging.info(f"Successfully saved report to {filepath}")
+        
+        return json.dumps({
+            "success": True,
+            "filepath": filepath,
+            "filename": timestamped_filename,
+            "message": f"Report successfully saved to {filepath}"
+        })
+    
+    except Exception as e:
+        error_msg = f"Error saving report: {str(e)}"
         logging.error(error_msg)
         return json.dumps({"error": error_msg})
 

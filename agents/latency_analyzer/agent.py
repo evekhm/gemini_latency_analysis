@@ -22,7 +22,9 @@ from .utils import (
     analyze_correlation_detailed,
     # Import slow query tools from slow_query_analyzer
     fetch_slow_queries,
-    fetch_single_query
+    fetch_single_query,
+    # Report generation
+    save_analysis_report
 )
 
 __dir__ = os.path.dirname(__file__)
@@ -57,7 +59,9 @@ latency_analyzer = LlmAgent(
         compare_time_periods,
         # Individual query analysis (from slow_query_analyzer)
         fetch_slow_queries,  # Fetch metadata for slowest queries
-        fetch_single_query   # Fetch full details for a specific query
+        fetch_single_query,  # Fetch full details for a specific query
+        # Report generation
+        save_analysis_report  # Save final report to markdown file
     ],
     generate_content_config=types.GenerateContentConfig(
         temperature=0,

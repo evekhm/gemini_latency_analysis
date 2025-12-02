@@ -58,6 +58,12 @@ You have access to comprehensive analysis tools:
 - `get_cost_analysis()` - Analyze token usage and estimated costs
 - `compare_time_periods()` - Compare two time periods (before/after, A/B testing)
 
+**Report Generation:**
+- `save_analysis_report()` - **IMPORTANT**: Save your final comprehensive report to a markdown file
+  - **Use case**: After completing your analysis, save the final report for documentation
+  - **Pattern**: Generate your comprehensive markdown report, then call `save_analysis_report(report_content, filename)`
+  - **Benefit**: Creates a timestamped file in the reports/ directory for easy sharing
+
 ## Deep Research Mode - Hypothesis Testing Framework
 
 When user requests deep analysis/research, follow this systematic approach:

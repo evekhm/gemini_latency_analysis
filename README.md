@@ -2,9 +2,9 @@
 * [Latency Analysis](#latency-analysis)
   * [Overview](#overview)
   * [Prerequisites](#prerequisites)
+    * [Set Environment Variables](#set-environment-variables)
     * [Enable Gemini Requests Logging](#enable-gemini-requests-logging)
     * [Install Libraries](#install-libraries)
-    * [Set Environment Variables](#set-environment-variables)
   * [Latency Analyzer Agent (Recommended Approach)](#latency-analyzer-agent-recommended-approach)
     * [Features](#features)
     * [Analysis Tools](#analysis-tools)
@@ -21,6 +21,14 @@
       * [5. Latency vs Output+Thought Tokens](#5-latency-vs-outputthought-tokens)
       * [6. Hourly Analysis by Day Type](#6-hourly-analysis-by-day-type)
     * [Output Files](#output-files)
+  * [Troubleshooting](#troubleshooting)
+    * [Debugging Agent Tool Errors](#debugging-agent-tool-errors)
+      * [1. Check Agent Logs](#1-check-agent-logs)
+      * [2. Test Tools Directly](#2-test-tools-directly)
+      * [3. Common Issues and Solutions](#3-common-issues-and-solutions)
+      * [4. Enable Verbose Logging](#4-enable-verbose-logging)
+      * [5. Verify BigQuery Access](#5-verify-bigquery-access)
+      * [6. Check Tool Return Format](#6-check-tool-return-format)
   * [Verification](#verification)
 <!-- TOC -->
 # Latency Analysis
@@ -168,31 +176,40 @@ The `latency_analyzer` agent is a comprehensive AI-powered tool that automates l
 
 ### Usage
 
-**Quick Start - Automated Deep Research (Recommended):**
+**Quick Start - Autonomous Analysis (Recommended):**
 
-For comprehensive 90-day analysis with hypothesis testing:
+The best way to use the agent is with **autonomous mode**, where a single comprehensive query lets the agent make intelligent decisions:
+
+```shell
+./run_autonomous_analysis.sh
+```
+
+This uses `autonomous_analysis_90d.json` which contains a single query that instructs the agent to:
+- Generate and test hypotheses systematically
+- Make intelligent tool choices (e.g., use alternatives if a tool fails)
+- Adapt analysis based on findings
+- Analyze correlations, clusters, costs, and individual queries
+- Generate a comprehensive final report
+- **Save the report to `reports/` directory with timestamp**
+
+The agent will create a file like: `reports/latency_analysis_report_20251201_162530.md`
+
+Alternatively, run it manually:
+
+```shell
+cd agents
+adk run --replay ../autonomous_analysis_90d.json latency_analyzer
+```
+
+**Alternative: Step-by-Step Analysis:**
+
+If you prefer to see each analysis step separately, use the step-by-step replay:
 
 ```shell
 ./run_comprehensive_analysis.sh
 ```
 
-This script uses the `comprehensive_analysis_90d.json` replay file and runs a complete analysis including:
-- Overall statistics and health check
-- Token correlation analysis (output+thought tokens)
-- Clustering of slow queries
-- Agent performance comparison
-- Performance degradation trends
-- Cost analysis
-- Individual slow query deep-dives
-- Prioritized recommendations
-- Follow-up questions
-
-Alternatively, you can run it manually:
-
-```shell
-cd agents
-adk run --replay ../comprehensive_analysis_90d.json latency_analyzer
-```
+This uses `comprehensive_analysis_90d.json` with 10 specific queries demonstrating each tool category.
 
 **Interactive Mode:**
 
@@ -338,6 +355,112 @@ Analyzes combined impact of output and thought tokens on latency
 ### Output Files
 - **PDF Report**: `out/complete_analysis_<model_name>__<timestamp>.pdf`
 - **PNG Files**: High-resolution charts in `out/png/` directory (300 DPI and 4K)
+
+---
+
+## Troubleshooting
+
+### Debugging Agent Tool Errors
+
+If the agent encounters errors during analysis, follow these steps:
+
+#### 1. Check Agent Logs
+
+The agent writes detailed logs to a temporary directory. The log path is shown when you start the agent:
+
+```bash
+# View the latest log in real-time
+tail -F /var/folders/.../agents_log/agent.latest.log
+
+# View last 100 lines
+tail -100 /var/folders/.../agents_log/agent.latest.log
+
+# Search for errors
+grep -i error /var/folders/.../agents_log/agent.latest.log
+```
+
+**Common log patterns:**
+- `ERROR - utils.py:XXXX - Error in <tool_name>: <error_message>` - Tool execution error
+- `WARNING - <message>` - Non-fatal issues (e.g., insufficient data for quartile analysis)
+
+#### 2. Test Tools Directly
+
+You can test individual tools in Python to debug issues:
+
+```python
+from agents.latency_analyzer.utils import analyze_correlation_detailed, get_overall_statistics
+
+# Test a specific tool
+result = analyze_correlation_detailed(time_range="7d")
+print(result)
+
+# Check for errors in the JSON response
+import json
+data = json.loads(result)
+if "error" in data:
+    print(f"Error: {data['error']}")
+```
+
+#### 3. Common Issues and Solutions
+
+**Issue: "Insufficient data for correlation analysis"**
+- **Cause:** Not enough data points in the specified time range
+- **Solution:** Increase the time range (e.g., from "24h" to "7d" or "30d")
+
+**Issue: "Bin labels must be one fewer than the number of bin edges"**
+- **Cause:** Too few unique token values to create quartiles
+- **Solution:** This is now handled gracefully with a warning. The analysis will continue without quartile breakdown.
+
+**Issue: "No data found"**
+- **Cause:** No logs in BigQuery for the specified time range or filters
+- **Solution:** 
+  - Verify logs are being written to BigQuery
+  - Check environment variables (PROJECT_ID, DATASET, GEMINI_LOG_TABLE)
+  - Verify the time range has data: `bq query "SELECT COUNT(*) FROM \`${PROJECT_ID}.${DATASET}.${GEMINI_LOG_TABLE}\`"`
+
+**Issue: "PROJECT_ID environment variable is not set"**
+- **Cause:** Environment variables not loaded
+- **Solution:** 
+  - Ensure `.env` file exists and is properly formatted
+  - Run `source .env` before starting the agent
+  - Check that the agent is loading the `.env` file (you should see "Loaded .env file" in logs)
+
+#### 4. Enable Verbose Logging
+
+To get more detailed logs, you can modify the logging level in the agent:
+
+```python
+# In agents/latency_analyzer/agent.py or utils.py
+import logging
+logging.basicConfig(level=logging.DEBUG)
+```
+
+#### 5. Verify BigQuery Access
+
+Test that you can query the logs table:
+
+```bash
+# Test query
+bq query --use_legacy_sql=false "
+SELECT COUNT(*) as total_requests,
+       MIN(logging_time) as earliest,
+       MAX(logging_time) as latest
+FROM \`${PROJECT_ID}.${DATASET}.${GEMINI_LOG_TABLE}\`
+"
+```
+
+Expected output should show:
+- `total_requests` > 0
+- `earliest` and `latest` timestamps
+
+#### 6. Check Tool Return Format
+
+All tools return JSON strings. If a tool fails, it returns:
+```json
+{"error": "Error message describing what went wrong"}
+```
+
+The agent should detect these errors and report them to you.
 
 ---
 

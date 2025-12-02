@@ -1,0 +1,6 @@
+{
+    "state": {},
+    "queries": [
+        "Perform a comprehensive autonomous deep research latency analysis for the last 90 days. Execute the full workflow intelligently: 1) Generate and test hypotheses systematically (token size, agent-specific issues, time-based patterns, clustering), 2) Use appropriate tools based on your findings - if correlation analysis fails, use alternative tools, 3) Analyze correlations and cluster slow queries to identify dominant patterns, 4) Compare agents and analyze costs, 5) Check for performance degradation if sufficient data exists, 6) Fetch and analyze the top 5 slowest queries individually to understand root causes, 7) Generate a final comprehensive markdown report with: executive summary, hypothesis testing results (accepted/rejected with evidence), key findings with data, root causes, prioritized recommendations with expected impact, and follow-up questions. After generating the report, save it to a file using the save_analysis_report tool. Make intelligent decisions about which tools to use and adapt your analysis based on what you discover."
+    ]
+}
