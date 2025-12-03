@@ -13,3 +13,4 @@ google-auth
 python-dotenv
 google-adknumpy
 pandas
+google-adk
