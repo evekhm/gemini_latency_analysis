@@ -2,7 +2,6 @@
 * [Latency Analysis](#latency-analysis)
   * [Overview](#overview)
   * [Prerequisites](#prerequisites)
-    * [Set Environment Variables](#set-environment-variables)
     * [Enable Gemini Requests Logging](#enable-gemini-requests-logging)
     * [Install Libraries](#install-libraries)
   * [Latency Analyzer Agent (Recommended Approach)](#latency-analyzer-agent-recommended-approach)
@@ -55,14 +54,18 @@ An AI-powered performance analytics platform that automatically analyzes LLM app
 
 ## Prerequisites
 
-### Set Environment Variables
+### Enable Gemini Requests Logging
+
+Vertex AI can [log samples of requests and responses](https://cloud.google.com/vertex-ai/generative-ai/docs/multimodal/request-response-logging) for Gemini and supported partner models.
+The logs are saved to a BigQuery table for viewing and analysis.
+
 
 Update environment variables in [.env](.env) file accordingly:
 ```shell
 export PROJECT_ID="..."
 export MODEL="gemini-2.5-pro"  # Gemini Model for which configuration is applied. You will need to re-apply this step for each Gemini model being used, e.g. for flash, pro, etc. separately.
-export DATASET="..."           # name of the dataset, configured for logging. Make sure to create such dataset first.
-export GEMINI_LOG_TABLE="..."  # name of the table configured for logging. You want each MODEL to have its own table. The table will be created automatically.
+export DATASET="..."           # name of the dataset, configured for logging in BigQuery. Make sure to create such dataset first.
+export GEMINI_LOG_TABLE="..."  # name of the table configured for logging in BigQuery. You want each MODEL to have its own table. The table will be created automatically.
 ```
 
 Load environment variables:
@@ -70,15 +73,7 @@ Load environment variables:
 source .env
 ```
 
-### Enable Gemini Requests Logging
-
-Vertex AI can log samples of requests and responses for Gemini and supported partner models.
-The logs are saved to a BigQuery table for viewing and analysis.
-
-To enable logging, follow these [instructions](https://cloud.google.com/vertex-ai/generative-ai/docs/multimodal/request-response-logging)
-
-
-**(Optional) Create dataset**
+**Create dataset (if it does not exist yet)**
 ```shell
 bq --location="$GOOGLE_CLOUD_LOCATION" mk --dataset --description "Dataset for LLM logging" --project_id=$PROJECT_ID ${DATASET} || echo "Dataset DATASET already exists."
 ```
