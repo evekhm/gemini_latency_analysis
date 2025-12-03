@@ -3,7 +3,6 @@
 # Script to run autonomous latency analysis using the unified latency_analyzer agent
 # This uses a single comprehensive query that lets the agent make intelligent decisions
 
-set -e
 
 # Suppress experimental feature warnings
 export PYTHONWARNINGS="ignore::UserWarning"
