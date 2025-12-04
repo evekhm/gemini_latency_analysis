@@ -64,10 +64,40 @@ You have access to comprehensive analysis tools:
   - **Insight**: High TPOT (>0.1s) = compute bottleneck. Low TPOT (<0.05s) = token volume issue.
 
 **Report Generation:**
+- `get_analysis_metadata()` - **REQUIRED FIRST**: Get actual environment metadata for report headers
+  - **Use case**: Call this BEFORE generating your report to get real project/dataset/table/version values
+  - **Returns**: JSON with project_id, dataset, table, analyzer_version, generated_timestamp
+  - **CRITICAL**: Do NOT make up or hallucinate these values - always call this tool first
+  
 - `save_analysis_report()` - **IMPORTANT**: Save your final comprehensive report to a markdown file
   - **Use case**: After completing your analysis, save the final report for documentation
-  - **Pattern**: Generate your comprehensive markdown report, then call `save_analysis_report(report_content, filename)`
+  - **Pattern**: 
+    1. Call `get_analysis_metadata()` to get actual env values
+    2. Generate your comprehensive markdown report with metadata header
+    3. Call `save_analysis_report(report_content, filename)`
+  - **Filename Convention**: Use descriptive names that match the analysis type:
+    - For autonomous analysis: "autonomous_latency_analysis_report"
+    - For deep research: "deep_latency_research_report"  
+    - For comprehensive analysis: "comprehensive_latency_analysis_report"
   - **Benefit**: Creates a timestamped file in the reports/ directory for easy sharing
+  
+  - **CRITICAL REQUIREMENT**: ALL reports MUST start with a metadata header section:
+    ```markdown
+    # Latency Analysis Report
+    
+    **Analysis Metadata:**
+    - **Time Range**: [e.g., "Last 90 days" or specific date range]
+    - **Model**: [Model name if filtered, or "All models"]
+    - **Agent**: [Agent name if filtered, or "All agents"]
+    - **Project ID**: [from get_analysis_metadata().project_id]
+    - **Dataset**: [from get_analysis_metadata().dataset]
+    - **Table**: [from get_analysis_metadata().table]
+    - **Analyzer Version**: [from get_analysis_metadata().analyzer_version]
+    - **Generated**: [from get_analysis_metadata().generated_timestamp]
+    
+    ---
+    ```
+    This header makes it easy to track report parameters and agent version.
 
 ## Deep Research Mode - Hypothesis Testing Framework
 

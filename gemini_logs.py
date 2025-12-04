@@ -17,6 +17,9 @@ load_dotenv(override=True)
 
 warnings.filterwarnings('ignore')
 
+# Script version for tracking
+SCRIPT_VERSION = "1.1.0"  # Added visualization improvements and version tracking
+
 # --- USER INPUT SECTION ---
 # BigQuery dataset and table IDs
 dataset_id = os.getenv("DATASET", "MY_DATASET")
@@ -586,8 +589,10 @@ def add_page_header(fig, start_time, end_time, generation_time, title_suffix="")
         project_info = f"Project ID: {project_id}"
 
     header_text = f"""{project_info}
+Dataset: {dataset_id}.{gemini_table_id}
 Period: {start_time} to {end_time} UTC
 Generated: {generation_time} UTC
+Visualization Script v{SCRIPT_VERSION}
 {title_suffix}"""
 
     fig.text(0.02, 0.98, header_text, fontsize=10, verticalalignment='top',

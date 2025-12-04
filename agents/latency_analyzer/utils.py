@@ -16,6 +16,9 @@ PROJECT_ID = os.getenv('PROJECT_ID')
 DATASET = os.getenv('DATASET', 'gemini_logs')
 GEMINI_LOG_TABLE = os.getenv('GEMINI_LOG_TABLE', 'gemini_logs')
 
+# Agent version for tracking
+AGENT_VERSION = "1.1.0"  # Added KPI compliance and request queuing analysis
+
 # Custom JSON encoder to handle Decimal and datetime types
 class AnalysisEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -64,6 +67,29 @@ def parse_time_range(time_range: str) -> tuple[str, str]:
         end = now
     
     return start.strftime('%Y-%m-%d %H:%M:%S'), end.strftime('%Y-%m-%d %H:%M:%S')
+
+
+def get_analysis_metadata() -> str:
+    """
+    Get metadata about the analysis environment for report headers.
+    
+    Returns actual values from environment variables to avoid hallucination.
+    Use this tool when generating report metadata headers.
+    
+    Returns:
+        JSON string with project_id, dataset, table, and analyzer version
+    """
+    from datetime import datetime
+    
+    metadata = {
+        "project_id": PROJECT_ID,
+        "dataset": DATASET,
+        "table": GEMINI_LOG_TABLE,
+        "analyzer_version": AGENT_VERSION,
+        "generated_timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
+    
+    return json.dumps(metadata, cls=AnalysisEncoder)
 
 
 def execute_bigquery(query: str) -> pd.DataFrame:

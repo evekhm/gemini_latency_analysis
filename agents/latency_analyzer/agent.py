@@ -25,6 +25,7 @@ from .utils import (
     fetch_single_query,
     # Report generation
     save_analysis_report,
+    get_analysis_metadata,  # Get actual env values for report headers
     # New TPOT tool
     get_token_velocity,
     # New KPI and Queuing tools
@@ -36,7 +37,7 @@ __dir__ = os.path.dirname(__file__)
 load_dotenv(dotenv_path=os.path.join(__dir__, "../../.env"))
 
 # Get the model from environment variable
-MODEL = os.getenv('MODEL', 'gemini-2.0-flash-thinking-exp')
+MODEL = os.getenv('MODEL')
 
 # Latency Analyzer Agent with all analysis tools (merged with slow_query_analyzer)
 latency_analyzer = LlmAgent(
@@ -67,6 +68,7 @@ latency_analyzer = LlmAgent(
         fetch_single_query,  # Fetch full details for a specific query
         # Report generation
         save_analysis_report,  # Save final report to markdown file
+        get_analysis_metadata,  # Get actual environment metadata
         # TPOT Analysis
         get_token_velocity,   # Analyze generation speed vs volume
         # KPI & Queuing
