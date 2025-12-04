@@ -107,7 +107,10 @@ def get_overall_statistics(
     agent_name: Optional[str] = None
 ) -> str:
     """
-    Get overall latency and token statistics.
+    Get overall latency and token statistics with comprehensive percentile breakdown.
+    
+    Returns mean, median, P75, P90, P95, P99, P99.9 latency percentiles for
+    complete distribution analysis.
     
     Args:
         time_range: Time range to analyze (e.g., "24h", "7d", "2025-01-01 to 2025-01-31")
@@ -115,7 +118,7 @@ def get_overall_statistics(
         agent_name: Filter by specific agent (optional)
         
     Returns:
-        JSON string with overall statistics
+        JSON string with overall statistics including all percentiles
     """
     try:
         start_time, end_time = parse_time_range(time_range)
@@ -141,9 +144,11 @@ def get_overall_statistics(
           COUNT(*) as total_requests,
           AVG(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) AS mean_latency,
           APPROX_QUANTILES(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000, 100)[OFFSET(50)] AS median_latency,
+          APPROX_QUANTILES(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000, 100)[OFFSET(75)] AS p75_latency,
           APPROX_QUANTILES(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000, 100)[OFFSET(90)] AS p90_latency,
           APPROX_QUANTILES(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000, 100)[OFFSET(95)] AS p95_latency,
           APPROX_QUANTILES(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000, 100)[OFFSET(99)] AS p99_latency,
+          APPROX_QUANTILES(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000, 1000)[OFFSET(999)] AS p999_latency,
           MIN(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) AS min_latency,
           MAX(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) AS max_latency,
           STDDEV(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) AS std_latency,
@@ -182,9 +187,11 @@ def get_overall_statistics(
             "latency": {
                 "mean": float(row['mean_latency']) if pd.notna(row['mean_latency']) else None,
                 "median": float(row['median_latency']) if pd.notna(row['median_latency']) else None,
+                "p75": float(row['p75_latency']) if pd.notna(row['p75_latency']) else None,
                 "p90": float(row['p90_latency']) if pd.notna(row['p90_latency']) else None,
                 "p95": float(row['p95_latency']) if pd.notna(row['p95_latency']) else None,
                 "p99": float(row['p99_latency']) if pd.notna(row['p99_latency']) else None,
+                "p99.9": float(row['p999_latency']) if pd.notna(row['p999_latency']) else None,
                 "min": float(row['min_latency']) if pd.notna(row['min_latency']) else None,
                 "max": float(row['max_latency']) if pd.notna(row['max_latency']) else None,
                 "std": float(row['std_latency']) if pd.notna(row['std_latency']) else None
@@ -683,7 +690,7 @@ def get_outlier_analysis(
 
 
 def get_slowest_queries(
-    num_queries: int = 10,
+    num_queries: int = 20,
     time_range: str = "24h",
     model_name: Optional[str] = None
 ) -> str:
@@ -1452,7 +1459,7 @@ def analyze_correlation_detailed(
         return json.dumps({"error": str(e)})
 
 
-def fetch_slow_queries(num_records: int = 10) -> str:
+def fetch_slow_queries(num_records: int = 20) -> str:
     """
     Fetches the top N slowest queries from the BigQuery logs and returns metadata only.
     

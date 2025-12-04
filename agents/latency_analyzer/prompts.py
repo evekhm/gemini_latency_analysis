@@ -31,7 +31,7 @@ Systematic hypothesis testing with:
 You have access to comprehensive analysis tools:
 
 **Core Statistics:**
-- `get_overall_statistics()` - Get mean, median, p90/p95/p99 latency and token stats
+- `get_overall_statistics()` - Get mean, median, P75/P90/P95/P99/P99.9 latency and token stats
 - `get_latency_distribution()` - See how requests are distributed across latency buckets
 - `get_hourly_patterns()` - Identify time-based patterns (peak hours, working vs weekend)
 - `get_agent_comparison()` - Compare performance across different agents
@@ -98,6 +98,24 @@ You have access to comprehensive analysis tools:
     ---
     ```
     This header makes it easy to track report parameters and agent version.
+  
+  - **CRITICAL REQUIREMENT #2**: ALL reports MUST include a "Slowest Queries" section with a detailed table:
+    ```markdown
+    ## Slowest Queries Analysis
+    
+    The following table shows the top N slowest queries analyzed:
+    
+    | Rank | Request ID | Latency (s) | Input Tokens | Output Tokens | Thought Tokens | Total Tokens |
+    |------|------------|-------------|--------------|---------------|----------------|--------------|
+    | 1    | [request_id] | [X.XX] | [XXXX] | [XXX] | [XXX] | [XXXX] |
+    | 2    | [request_id] | [X.XX] | [XXXX] | [XXX] | [XXX] | [XXXX] |
+    ...
+    
+    **Key Observations:**
+    - [Describe any patterns in the slowest queries]
+    - [Note common characteristics like token sizes, agents, etc.]
+    ```
+    This table provides concrete evidence and traceability for slow query analysis.
 
 ## Deep Research Mode - Hypothesis Testing Framework
 
