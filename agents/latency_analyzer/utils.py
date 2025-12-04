@@ -1595,7 +1595,7 @@ def get_token_velocity(
             
         # Calculate TPOT (seconds per token)
         df['tpot'] = df['latency'] / df['output_tokens']
-        
+
         # Statistics
         stats = {
             "avg_tpot": float(df['tpot'].mean()),
@@ -1649,6 +1649,151 @@ def get_token_velocity(
     except Exception as e:
         logging.error(f"Error in get_token_velocity: {str(e)}")
         return json.dumps({"error": str(e)})
+
+
+def analyze_request_queuing(
+    time_range: str = "24h",
+    model_name: Optional[str] = None,
+    burst_window_seconds: int = 1
+) -> str:
+    """
+    Analyze if latency spikes are caused by request queuing (micro-bursts).
+    
+    Checks if multiple requests arriving within a small window (e.g. 1s)
+    lead to increased latency, suggesting a queuing mechanism is delaying execution.
+    """
+    try:
+        start_time, end_time = parse_time_range(time_range)
+        
+        where_clauses = [
+            f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
+            "T.full_request IS NOT NULL",
+            "T.full_response IS NOT NULL",
+            "JSON_VALUE(T.metadata.request_latency) IS NOT NULL"
+        ]
+        
+        if model_name:
+            where_clauses.append(f"T.model LIKE '%{model_name}%'")
+        
+        where_clause = " AND ".join(where_clauses)
+        
+        # Group by small time windows (micro-bursts)
+        query = f"""
+        WITH bursts AS (
+          SELECT
+            TIMESTAMP_TRUNC(T.logging_time, SECOND) AS burst_time,
+            COUNT(*) as request_count,
+            AVG(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) AS avg_latency,
+            MAX(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) AS max_latency
+          FROM
+            `{PROJECT_ID}.{DATASET}.{GEMINI_LOG_TABLE}` AS T
+          WHERE
+            {where_clause}
+          GROUP BY burst_time
+        )
+        SELECT
+          request_count,
+          COUNT(*) as burst_count,
+          AVG(avg_latency) as mean_latency_for_burst_size,
+          AVG(max_latency) as mean_max_latency_for_burst_size
+        FROM bursts
+        GROUP BY request_count
+        ORDER BY request_count
+        """
+        
+        df = execute_bigquery(query)
+        
+        if df.empty:
+            return json.dumps({"error": "No data found for queuing analysis"})
+            
+        # Analyze correlation between burst size and latency
+        correlation = df['request_count'].corr(df['mean_latency_for_burst_size'])
+        
+        burst_impact = []
+        for _, row in df.iterrows():
+            burst_impact.append({
+                "concurrent_requests_per_sec": int(row['request_count']),
+                "frequency": int(row['burst_count']),
+                "avg_latency": float(row['mean_latency_for_burst_size']),
+                "avg_max_latency": float(row['mean_max_latency_for_burst_size'])
+            })
+            
+        # Determine if queuing is happening
+        # If latency increases significantly with burst size, queuing is likely
+        is_queuing = correlation > 0.7 if pd.notna(correlation) else False
+        
+        result = {
+            "metadata": {
+                "time_range": f"{start_time} to {end_time}",
+                "burst_window_seconds": burst_window_seconds
+            },
+            "correlation": float(correlation) if pd.notna(correlation) else None,
+            "queuing_detected": bool(is_queuing),
+            "burst_impact": burst_impact,
+            "summary": f"Queuing hypothesis {'SUPPORTED' if is_queuing else 'REJECTED'}. Correlation between burst size and latency: {correlation:.3f}"
+        }
+        
+        return json.dumps(result, cls=AnalysisEncoder)
+        
+    except Exception as e:
+        logging.error(f"Error in analyze_request_queuing: {str(e)}")
+        return json.dumps({"error": str(e)})
+
+
+def check_kpi_compliance(
+    time_range: str = "24h",
+    mean_latency_target: float = 3.0,
+    p95_latency_target: float = 5.0
+) -> str:
+    """
+    Check if current performance meets defined KPIs.
+    
+    Args:
+        time_range: Time range to analyze
+        mean_latency_target: Target for mean latency in seconds (default 3.0)
+        p95_latency_target: Target for P95 latency in seconds (default 5.0)
+    """
+    try:
+        # Reuse get_overall_statistics to get current metrics
+        stats_json = get_overall_statistics(time_range=time_range)
+        stats = json.loads(stats_json)
+        
+        if "error" in stats:
+            return stats_json
+            
+        current_mean = stats['latency']['mean']
+        current_p95 = stats['latency']['p95']
+        
+        compliance = {
+            "mean_latency": {
+                "target": mean_latency_target,
+                "actual": current_mean,
+                "status": "PASS" if current_mean <= mean_latency_target else "FAIL",
+                "gap": current_mean - mean_latency_target
+            },
+            "p95_latency": {
+                "target": p95_latency_target,
+                "actual": current_p95,
+                "status": "PASS" if current_p95 <= p95_latency_target else "FAIL",
+                "gap": current_p95 - p95_latency_target
+            },
+            "overall_status": "PASS" if (current_mean <= mean_latency_target and current_p95 <= p95_latency_target) else "FAIL"
+        }
+        
+        result = {
+            "metadata": {
+                "time_range": time_range
+            },
+            "compliance": compliance,
+            "summary": f"KPI Status: {compliance['overall_status']}. Mean: {current_mean:.2f}s (Target {mean_latency_target}s), P95: {current_p95:.2f}s (Target {p95_latency_target}s)"
+        }
+        
+        return json.dumps(result, cls=AnalysisEncoder)
+        
+    except Exception as e:
+        logging.error(f"Error in check_kpi_compliance: {str(e)}")
+        return json.dumps({"error": str(e)})
+
 
 def save_analysis_report(
     report_content: str,

@@ -26,7 +26,10 @@ from .utils import (
     # Report generation
     save_analysis_report,
     # New TPOT tool
-    get_token_velocity
+    get_token_velocity,
+    # New KPI and Queuing tools
+    analyze_request_queuing,
+    check_kpi_compliance
 )
 
 __dir__ = os.path.dirname(__file__)
@@ -65,7 +68,10 @@ latency_analyzer = LlmAgent(
         # Report generation
         save_analysis_report,  # Save final report to markdown file
         # TPOT Analysis
-        get_token_velocity   # Analyze generation speed vs volume
+        get_token_velocity,   # Analyze generation speed vs volume
+        # KPI & Queuing
+        analyze_request_queuing, # Detect micro-bursts and queuing
+        check_kpi_compliance     # Check against performance targets
     ],
     generate_content_config=types.GenerateContentConfig(
         temperature=0,

@@ -44,6 +44,8 @@ You have access to comprehensive analysis tools:
 - `get_slowest_queries()` - Get top N slowest queries for deep-dive
 - `get_query_details()` - Get full details for a specific request_id
 - `get_concurrent_request_impact()` - Check if high concurrency degrades performance
+- `analyze_request_queuing()` - **KEY FOR RESEARCH**: Detect if micro-bursts (1s windows) cause latency spikes (queuing hypothesis)
+- `check_kpi_compliance()` - Compare current performance against defined targets (e.g. mean < 3s)
 
 **Individual Query Analysis (for token-efficient deep dives):**
 - `fetch_slow_queries()` - **LIGHTWEIGHT**: Fetch only request IDs and latency for top N slowest queries (avoids token limits)
@@ -95,6 +97,10 @@ Generate multiple hypotheses to test:
    - "Outliers share common characteristics"
    - "Specific request types are consistently slow"
 
+6. **H6: Request Queuing**
+   - "Latency spikes are caused by micro-bursts of requests"
+   - "Requests arriving at the same second get queued"
+
 ### Phase 2: Hypothesis Testing
 For each hypothesis, systematically test:
 
@@ -118,6 +124,11 @@ For each hypothesis, systematically test:
 2. Analyze cluster characteristics (token patterns, latency ranges)
 3. Check if clusters are distinct or overlapping
 4. **Verdict**: Accept if dominant cluster contains >30% of slow queries
+
+**Example: Testing H6 (Request Queuing)**
+1. Call `analyze_request_queuing(burst_window_seconds=1)`
+2. Check correlation between burst size and latency
+3. **Verdict**: Accept if correlation > 0.7 and high-burst buckets have significantly higher latency
 
 ### Phase 3: Findings Synthesis
 Summarize all tested hypotheses:
@@ -181,6 +192,7 @@ Based on findings, suggest specific follow-up questions:
 When analyzing latency, follow this systematic approach:
 
 ### 1. **Health Check** (Start Here)
+- Call `check_kpi_compliance()` if targets are known (default mean < 3s)
 - Call `get_overall_statistics()` to establish baseline
 - Check if latency is within acceptable ranges:
   - Good: p95 < 3s, mean < 2s
