@@ -241,40 +241,88 @@ Quick, focused analysis for common use cases:
 
 ### Autonomous Analysis (scope: "autonomous")
 
-Comprehensive, self-directed analysis following a systematic workflow:
+Comprehensive, self-directed analysis following a systematic workflow. **BE EXHAUSTIVE AND COMPLETIONIST.**
 
 1. **Configuration Setup**:
    - Call `get_analysis_config()` to get settings
    - Call `parse_time_range()` to get actual date range
-   - Apply agent filtering based on `agent_name` config
+   
+   **Agent Filtering Logic**:
+   - If `agent_name` IS provided (not null): Apply it as a filter to ALL tools that support agent filtering
+   - If `agent_name` IS NOT provided (null): Analyze ALL agents and MUST include agent comparison in final report
 
 2. **KPI Compliance**: 
    - Call `check_kpi_compliance()` with KPI targets from config
+   - Document PASS/FAIL status with actual vs target values
 
 3. **Systematic Hypothesis Testing**:
-   - **H1: Token correlation** → `analyze_correlation_detailed()`
-   - **H2: Agent-specific issues** → `get_agent_comparison()` (if agent_name is null)
-   - **H3: Time patterns** → `get_hourly_patterns()`
-   - **H4: Clustering** → `cluster_slow_queries()`
-   - **H5: Outliers** → `get_outlier_analysis()`
-   - **H6: Queuing** → `analyze_request_queuing()`
+   Generate and TEST each hypothesis. Document results as ACCEPTED ✓ or REJECTED ✗:
+   
+   - **H1: Token correlation drives latency**
+     - Tool: `analyze_correlation_detailed()`
+     - Evidence: Correlation coefficients, quartile analysis
+   
+   - **H2: Agent-specific performance issues**
+     - Tool: `get_agent_comparison()` (ONLY if agent_name is null)
+     - Evidence: Per-agent latency differences, volume distribution
+   
+   - **H3: Time-based patterns exist**
+     - Tool: `get_hourly_patterns()`
+     - Evidence: Peak hours, weekend vs weekday patterns
+   
+   - **H4: Clustering reveals patterns**
+     - Tool: `cluster_slow_queries()`
+     - Evidence: Cluster characteristics, size distribution
+   
+   - **H5: Outliers show specific issues**
+     - Tool: `get_outlier_analysis()`
+     - Evidence: Outlier characteristics and commonalities
+   
+   - **H6: Request queuing causes spikes**
+     - Tool: `analyze_request_queuing()`
+     - Evidence: Burst correlation with latency
+   
+   **CRITICAL**: Your final report MUST include a "Hypothesis Testing Results" section showing:
+   - **Accepted Hypotheses** (✓) with supporting evidence for each
+   - **Rejected Hypotheses** (✗) with reasons for rejection
 
 4. **Deep Dive**:
    - Call `fetch_slow_queries_batch(num=config.num_slowest_queries)`
    - Analyze anomalous clusters individually (don't just focus on the largest)
    - Use `fetch_fastest_queries()` for baseline comparison
+   
+   **Resilience**: If a tool fails, try diagnostics or alternative approaches. Don't give up on analysis.
 
 5. **Additional Analysis**:
-   - Call `get_token_velocity()` for TPOT analysis
-   - Call `detect_performance_degradation()` for trends
+   - Call `get_token_velocity()` for TPOT analysis (distinguish slow compute vs verbose output)
+   - Call `detect_performance_degradation()` for trends (try `compare_time_periods` if this fails)
    - Call `get_cost_analysis()` for cost breakdown
 
 6. **Report Generation**:
-   - Call `get_analysis_metadata()` first
-   - Generate comprehensive markdown report with all findings
-   - Call `save_analysis_report(content, "autonomous_latency_analysis_report")`
+   Call `get_analysis_metadata()` first to get environment values.
+   
+   **Required Report Structure** - Your markdown report MUST include these sections IN THIS ORDER:
+   
+   1. **Title** with metadata (time range, model, agent, dataset, generated timestamp)
+   2. **Executive Summary** (key findings, primary recommendation)
+   3. **Key Metrics** (quick stats: total requests, mean/P95 latency, cost)
+   4. **KPI Compliance** (PASS/FAIL with actual vs target values)
+   5. **Hypothesis Testing Results**:
+      - Accepted Hypotheses (✓ with evidence for each)
+      - Rejected Hypotheses (✗ with evidence for each)
+   6. **Key Findings** (numbered list with supporting data)
+   7. **Root Causes** (what's actually causing the issues)
+   8. **Slowest Queries Analysis** (table of top N queries from config)
+   9. **Cost Analysis** (total cost, per-agent breakdown if multiple agents)
+   10. **Recommendations**:
+       - High Priority (with specific implementation steps)
+       - Medium Priority
+       - Low Priority
+   11. **Data Tables** (overall statistics, agent comparison if agent_name was null)
+   
+   Save using: `save_analysis_report(content, "autonomous_latency_analysis_report")`
 
-**IMPORTANT**: Be autonomous. If you find anomalies or patterns, investigate them without asking the user.
+**IMPORTANT**: Be autonomous. If you find anomalies or patterns, investigate them without asking the user. Do NOT ask what to do next - just DO IT.
 
 **When to use**: Comprehensive audits, root cause analysis, multi-day investigations
 

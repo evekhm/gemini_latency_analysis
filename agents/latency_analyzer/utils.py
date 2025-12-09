@@ -2379,7 +2379,14 @@ def save_analysis_report(
         with open(filepath, 'w') as f:
             f.write(report_content)
         
-        logging.info(f"Successfully saved report to {filepath}")
+        # Log with prominent formatting
+        logging.info("=" * 80)
+        logging.info("✅ REPORT GENERATED SUCCESSFULLY")
+        logging.info("=" * 80)
+        logging.info(f"Report saved to: {filepath}")
+        logging.info(f"Filename: {timestamped_filename}")
+        logging.info(f"Report size: {len(report_content)} characters")
+        logging.info("=" * 80)
         
         return json.dumps({
             "success": True,
@@ -2390,14 +2397,22 @@ def save_analysis_report(
     
     except Exception as e:
         error_msg = f"Error saving report: {str(e)}"
-        logging.error(error_msg)
+        
+        # Log error with prominent formatting
+        logging.error("=" * 80)
+        logging.error("❌ REPORT GENERATION FAILED")
+        logging.error("=" * 80)
+        logging.error(f"Error: {error_msg}")
+        logging.error(f"Attempted filename: {filename}")
+        logging.error("=" * 80)
+        
         return json.dumps({"error": error_msg})
 
 
 def get_analysis_config() -> str:
     """Reads the analysis configuration from config files (.json).
     
-    This tool reads configuration parameters like time_period_days, KPIs, agent_name,
+    This tool reads configuration parameters like time_period, KPIs, agent_name,
     num_slowest_queries, and analysis_scope from the config file.
     
     NOTE: As of the refactoring, workflow logic has been moved to the system prompt.
@@ -2417,11 +2432,30 @@ def get_analysis_config() -> str:
              config_path = "autonomous_analysis_90d.json"
              
         if not os.path.exists(config_path):
-            return json.dumps({"error": f"Config file not found at {config_path}"})
+            error_msg = f"Config file not found at {config_path}"
+            logging.error(error_msg)
+            return json.dumps({"error": error_msg})
 
         with open(config_path, 'r') as f:
             data = json.load(f)
             # Return only the config section if it exists, otherwise the whole file
-            return json.dumps(data.get("config", data))
+            config = data.get("config", data)
+            
+            # Log configuration settings for visibility
+            logging.info("=" * 80)
+            logging.info("ANALYSIS CONFIGURATION")
+            logging.info("=" * 80)
+            logging.info(f"Config file: {config_path}")
+            logging.info(f"Time Period: {config.get('time_period_days', 'NOT SET')}")
+            logging.info(f"Analysis Scope: {config.get('analysis_scope', 'NOT SET')}")
+            logging.info(f"Target Mean Latency: {config.get('kpis', {}).get('mean_latency_target', 'NOT SET')}s")
+            logging.info(f"Target P95 Latency: {config.get('kpis', {}).get('p95_latency_target', 'NOT SET')}s")
+            logging.info(f"Num Slowest Queries: {config.get('num_slowest_queries', 'NOT SET')}")
+            logging.info(f"Agent Filter: {config.get('agent_name', 'None (all agents)')}")
+            logging.info("=" * 80)
+            
+            return json.dumps(config)
     except Exception as e:
-        return json.dumps({"error": f"Error reading config: {str(e)}"})
+        error_msg = f"Error reading config: {str(e)}"
+        logging.error(error_msg)
+        return json.dumps({"error": error_msg})
