@@ -1,0 +1,16 @@
+{
+    "state": {},
+    "config": {
+        "time_period_days": "24h",
+        "analysis_scope": "standard",
+        "kpis": {
+            "mean_latency_target": 3.0,
+            "p95_latency_target": 5.0
+        },
+        "num_slowest_queries": 10,
+        "agent_name": null
+    },
+    "queries": [
+        "Check KPI compliance and perform a quick latency analysis."
+    ]
+}

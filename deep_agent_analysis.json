@@ -1,0 +1,16 @@
+{
+    "state": {},
+    "config": {
+        "time_period_days": "7d",
+        "analysis_scope": "deep_research",
+        "kpis": {
+            "mean_latency_target": 2.5,
+            "p95_latency_target": 4.5
+        },
+        "num_slowest_queries": 50,
+        "agent_name": "latency_analyzer"
+    },
+    "queries": [
+        "Perform deep research analysis on the latency_analyzer agent. Focus on token correlation patterns and cluster analysis."
+    ]
+}

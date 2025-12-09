@@ -1,0 +1,50 @@
+{
+    "scenarios": {
+        "baseline": {
+            "description": "Fast baseline requests to establish minimum latency.",
+            "prompt": "Say 'Hi from Gemini'.",
+            "max_output_tokens": 2048,
+            "count": 10,
+            "concurrency": 10,
+            "streaming": false,
+            "agent_name": "load_gen_baseline"
+        },
+        "high_input": {
+            "description": "High input token count (approx 10,000) to test processing latency.",
+            "prompt_type": "generated",
+            "prompt_length": 10000,
+            "max_output_tokens": 2048,
+            "count": 100,
+            "concurrency": 5,
+            "streaming": false,
+            "agent_name": "load_gen_high_input"
+        },
+        "high_output": {
+            "description": "High output token count (approx 1000 words) to test generation latency.",
+            "prompt": "Write a long, detailed essay about the history of the internet. Write at least 1000 words.",
+            "max_output_tokens": 8192,
+            "count": 100,
+            "concurrency": 5,
+            "streaming": false,
+            "agent_name": "load_gen_high_output"
+        },
+        "concurrency": {
+            "description": "High concurrency to test system queuing and throughput.",
+            "prompt": "Say 'Hi'.",
+            "max_output_tokens": 2048,
+            "count": 100,
+            "concurrency": 50,
+            "streaming": false,
+            "agent_name": "load_gen_concurrency"
+        },
+        "direct_baseline": {
+            "description": "Direct client baseline requests.",
+            "prompt": "Say 'Hi from Direct Client'.",
+            "max_output_tokens": 2048,
+            "count": 10,
+            "concurrency": 5,
+            "streaming": false,
+            "agent_name": "direct"
+        }
+    }
+}

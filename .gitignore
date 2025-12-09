@@ -1,13 +1,8 @@
-/inspect_adk.py
-/inspect_agent.py
-/inspect_app_init.py
-/inspect_app_methods.py
-/inspect_apps.py
-/inspect_context.py
-/inspect_help.py
-/inspect_methods.py
 /agent_attributes.txt
 /.venv/
 /agents/latency_analyzer/__pycache__/
 /agents/slow_query_analyzer/__pycache__/
 /__pycache__/
+/reports**/
+
+/PROMPTS.md
