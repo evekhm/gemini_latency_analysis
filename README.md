@@ -64,13 +64,18 @@ Update environment variables in [.env](.env) file accordingly:
 ```shell
 export PROJECT_ID="..."
 export MODEL="gemini-2.5-pro"  # Gemini Model for which configuration is applied. You will need to re-apply this step for each Gemini model being used, e.g. for flash, pro, etc. separately.
-export DATASET="..."           # name of the dataset, configured for logging in BigQuery. Make sure to create such dataset first.
-export GEMINI_LOG_TABLE="..."  # name of the table configured for logging in BigQuery. You want each MODEL to have its own table. The table will be created automatically.
+export DATASET="logging"           # name of the dataset, configured for logging in BigQuery. Make sure to create such dataset first.
+export GEMINI_LOG_TABLE="2p5-pro"  # name of the table configured for logging in BigQuery. You want each MODEL to have its own table. The table will be created automatically.
 ```
 
 Load environment variables:
 ```shell
 source .env
+```
+
+Enabled required APIs:
+```shell
+gcloud services enable aiplatform.googleapis.com --project="${PROJECT_ID}"
 ```
 
 **Create dataset (if it does not exist yet)**
@@ -124,7 +129,47 @@ gcloud auth application-default login
 gcloud auth login
 ```
 
+
 ---
+
+## Load Generator
+
+A tool to generate synthetic load for latency analysis, now powered by ADK agents for better tracking.
+
+### Features
+- **ADK Agent Integration**: Uses `google.adk.agents.LlmAgent` to wrap requests, ensuring they are properly logged with agent labels.
+- **Direct Client Support**: Option to bypass the agent and use `google.genai.Client` directly for baseline comparison.
+- **Configurable Scenarios**: Define scenarios in `load_scenarios.json` with specific prompts, token counts, and concurrency.
+- **Latency Tracking**: Logs Time-to-First-Token (TTFT) and End-to-End (E2E) latency.
+
+### Usage
+
+**Run a specific scenario:**
+```shell
+python3 load_generator.py baseline
+```
+
+**Run with direct client (bypass agent):**
+```shell
+python3 load_generator.py direct_baseline
+```
+
+**List available scenarios:**
+```shell
+python3 load_generator.py --list
+```
+
+**Configuration (`load_scenarios.json`):**
+```json
+"baseline": {
+    "description": "Fast baseline requests",
+    "prompt": "Say 'Hi'",
+    "agent_name": "load_gen_baseline"  // Unique name for analysis filtering
+}
+```
+
+---
+
 
 ## Latency Analyzer Agent (Recommended Approach)
 
@@ -140,7 +185,8 @@ The `latency_analyzer` agent is a comprehensive AI-powered tool that automates l
 - **TPOT Analysis**: Calculates Time Per Output Token to distinguish between compute bottlenecks and verbose output.
 - **Cost Analysis**: Estimates token costs and identifies expensive query patterns.
 - **Individual Query Deep-Dive**: Fetches full details of specific slow queries for root cause analysis.
-- **Agent Comparison**: Compares performance across different agents
+- **Agent Comparison**: Compares performance across different agents (latency, volume, errors)
+- **Per-Agent Breakdown**: Automatically analyzes performance per agent when running global analysis.
 
 ### Analysis Tools
 
@@ -188,6 +234,13 @@ This uses `autonomous_analysis_90d.json` which contains a single query that inst
 - Analyze correlations, clusters, costs, and individual queries
 - Generate a comprehensive final report
 - **Save the report to `reports/` directory with timestamp**
+
+**Configuration:**
+The agent reads configuration from `autonomous_analysis_90d.json` (or the file passed to `adk run`). You can modify the `config` block to change:
+- `time_period_days`: Analysis window (e.g., 90)
+- `kpis`: Target latency values (Mean, P95)
+- `agent_name`: Filter for a specific agent (or `null` for all agents)
+- `num_slowest_queries`: Number of slow queries to fetch
 
 The agent will create a file like: `reports/latency_analysis_report_20251201_162530.md`
 

@@ -8,6 +8,8 @@ from typing import Optional, Dict, List, Any
 import pandas as pd
 import numpy as np
 from google.cloud import bigquery
+from google.api_core.exceptions import GoogleAPICallError
+from .query_extractor import extract_user_query
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -92,13 +94,104 @@ def get_analysis_metadata() -> str:
     return json.dumps(metadata, cls=AnalysisEncoder)
 
 
-def execute_bigquery(query: str) -> pd.DataFrame:
-    """Execute BigQuery query and return DataFrame."""
+def verify_data_access() -> str:
+    """
+    Verifies BigQuery configuration and data access.
+    
+    Use this tool when you encounter "No data found" errors to check:
+    1. If the configuration (Project, Dataset, Table) is correct
+    2. If the agent has permissions to access the table
+    3. If the table actually contains data
+    
+    Returns:
+        JSON string with configuration details and test query result
+    """
+    config = {
+        "project_id": PROJECT_ID,
+        "dataset": DATASET,
+        "table": GEMINI_LOG_TABLE,
+        "env_vars_loaded": {
+            "PROJECT_ID": bool(PROJECT_ID),
+            "DATASET": bool(DATASET),
+            "GEMINI_LOG_TABLE": bool(GEMINI_LOG_TABLE)
+        }
+    }
+    
+    # Log configuration for visibility
+    logging.info(f"[CONFIG] Verifying access with: Project={PROJECT_ID}, Dataset={DATASET}, Table={GEMINI_LOG_TABLE}")
+    
+    try:
+        # Test query to check access and get total count
+        query = f"""
+        SELECT 
+            COUNT(*) as total_rows,
+            MIN(logging_time) as first_log,
+            MAX(logging_time) as last_log
+        FROM `{PROJECT_ID}.{DATASET}.{GEMINI_LOG_TABLE}`
+        """
+        
+        df = execute_bigquery(query, timeout=30)
+        
+        if not df.empty:
+            row = df.iloc[0]
+            result = {
+                "status": "SUCCESS",
+                "message": "Successfully connected to BigQuery table",
+                "total_rows": int(row['total_rows']),
+                "data_range": {
+                    "start": row['first_log'].isoformat() if pd.notna(row['first_log']) else None,
+                    "end": row['last_log'].isoformat() if pd.notna(row['last_log']) else None
+                },
+                "configuration": config
+            }
+        else:
+            result = {
+                "status": "WARNING",
+                "message": "Query executed but returned no rows",
+                "configuration": config
+            }
+            
+    except Exception as e:
+        result = {
+            "status": "ERROR",
+            "message": f"Failed to access BigQuery: {str(e)}",
+            "error_type": type(e).__name__,
+            "configuration": config
+        }
+        logging.error(f"Data access verification failed: {str(e)}")
+        
+    return json.dumps(result, cls=AnalysisEncoder, default=str)
+
+
+def execute_bigquery(query: str, timeout: int = 300):
+    """Execute BigQuery query with timeout protection.
+    
+    Args:
+        query: SQL query to execute
+        timeout: Timeout in seconds (default: 300s = 5 minutes)
+        
+    Returns:
+        DataFrame with query results
+        
+    Raises:
+        TimeoutError: If query exceeds timeout
+    """
     if not PROJECT_ID:
         raise ValueError("PROJECT_ID environment variable is not set")
     
     client = bigquery.Client(project=PROJECT_ID)
-    return client.query(query).to_dataframe()
+    job_config = bigquery.QueryJobConfig(
+        job_timeout_ms=timeout * 1000  # Convert to milliseconds
+    )
+    query_job = client.query(query, job_config=job_config)
+    
+    try:
+        df = query_job.result(timeout=timeout).to_dataframe()
+        return df
+    except Exception as e:
+        if "timeout" in str(e).lower():
+            logging.error(f"BigQuery query timed out after {timeout} seconds")
+        raise
 
 
 def get_overall_statistics(
@@ -598,6 +691,7 @@ def get_token_correlation(
 def get_outlier_analysis(
     time_range: str = "24h",
     model_name: Optional[str] = None,
+    agent_name: Optional[str] = None,
     threshold_std: float = 3.0
 ) -> str:
     """
@@ -617,6 +711,8 @@ def get_outlier_analysis(
         
         if model_name:
             where_clauses.append(f"T.model LIKE '%{model_name}%'")
+        if agent_name:
+            where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
         
         where_clause = " AND ".join(where_clauses)
         
@@ -692,7 +788,8 @@ def get_outlier_analysis(
 def get_slowest_queries(
     num_queries: int = 20,
     time_range: str = "24h",
-    model_name: Optional[str] = None
+    model_name: Optional[str] = None,
+    agent_name: Optional[str] = None
 ) -> str:
     """
     Get the N slowest queries with full details for deep analysis.
@@ -712,6 +809,8 @@ def get_slowest_queries(
         
         if model_name:
             where_clauses.append(f"T.model LIKE '%{model_name}%'")
+        if agent_name:
+            where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
         
         where_clause = " AND ".join(where_clauses)
         
@@ -725,7 +824,16 @@ def get_slowest_queries(
           SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64) AS input_tokens,
           SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) AS output_tokens,
           SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.thoughtsTokenCount) AS INT64) AS thought_tokens,
-          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64) AS total_tokens
+          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64) AS total_tokens,
+          -- Extract last user message text (avoid fetching entire JSON)
+          (
+            SELECT STRING_AGG(JSON_VALUE(part, '$.text'), ' ')
+            FROM UNNEST(JSON_QUERY_ARRAY(T.full_request, '$.contents')) AS content,
+                 UNNEST(JSON_QUERY_ARRAY(content, '$.parts')) AS part
+            WHERE JSON_VALUE(content, '$.role') = 'user'
+            ORDER BY OFFSET(content) DESC
+            LIMIT 1
+          ) AS last_user_message
         FROM
           `{PROJECT_ID}.{DATASET}.{GEMINI_LOG_TABLE}` AS T
         WHERE
@@ -741,6 +849,22 @@ def get_slowest_queries(
         
         queries = []
         for _, row in df.iterrows():
+            # Extract query preview from last user message
+            query_preview = "N/A"
+            if pd.notna(row['last_user_message']):
+                msg = row['last_user_message']
+                # Apply context stripping logic
+                if "</Context>" in msg:
+                    msg = msg.split("</Context>")[-1].strip()
+                elif "</context>" in msg:
+                    msg = msg.split("</context>")[-1].strip()
+                
+                if len(msg) > 500 and "for the question" in msg.lower():
+                    idx = msg.lower().find("for the question")
+                    msg = msg[idx:].strip()
+                
+                query_preview = msg[:150]
+
             queries.append({
                 "request_id": row['request_id'],
                 "timestamp": row['logging_time'].isoformat() if pd.notna(row['logging_time']) else None,
@@ -750,7 +874,8 @@ def get_slowest_queries(
                 "input_tokens": int(row['input_tokens']) if pd.notna(row['input_tokens']) else None,
                 "output_tokens": int(row['output_tokens']) if pd.notna(row['output_tokens']) else None,
                 "thought_tokens": int(row['thought_tokens']) if pd.notna(row['thought_tokens']) else None,
-                "total_tokens": int(row['total_tokens']) if pd.notna(row['total_tokens']) else None
+                "total_tokens": int(row['total_tokens']) if pd.notna(row['total_tokens']) else None,
+                "query_preview": query_preview
             })
         
         result = {
@@ -1016,7 +1141,8 @@ def detect_performance_degradation(
 
 def get_cost_analysis(
     time_range: str = "24h",
-    model_name: Optional[str] = None
+    model_name: Optional[str] = None,
+    agent_name: Optional[str] = None
 ) -> str:
     """
     Analyze token usage and estimated costs.
@@ -1034,6 +1160,8 @@ def get_cost_analysis(
         
         if model_name:
             where_clauses.append(f"T.model LIKE '%{model_name}%'")
+        if agent_name:
+            where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
         
         where_clause = " AND ".join(where_clauses)
         
@@ -1105,7 +1233,8 @@ def get_cost_analysis(
 def compare_time_periods(
     period1: str,
     period2: str,
-    model_name: Optional[str] = None
+    model_name: Optional[str] = None,
+    agent_name: Optional[str] = None
 ) -> str:
     """
     Compare performance between two time periods.
@@ -1126,6 +1255,8 @@ def compare_time_periods(
             
             if model_name:
                 where_clauses.append(f"T.model LIKE '%{model_name}%'")
+            if agent_name:
+                where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
             
             where_clause = " AND ".join(where_clauses)
             
@@ -1191,7 +1322,8 @@ def compare_time_periods(
 def cluster_slow_queries(
     num_queries: int = 50,
     time_range: str = "24h",
-    model_name: Optional[str] = None
+    model_name: Optional[str] = None,
+    agent_name: Optional[str] = None
 ) -> str:
     """
     Cluster slow queries by similarity and provide breakdown.
@@ -1216,6 +1348,8 @@ def cluster_slow_queries(
         
         if model_name:
             where_clauses.append(f"T.model LIKE '%{model_name}%'")
+        if agent_name:
+            where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
         
         where_clause = " AND ".join(where_clauses)
         
@@ -1350,7 +1484,8 @@ def cluster_slow_queries(
 
 def analyze_correlation_detailed(
     time_range: str = "24h",
-    model_name: Optional[str] = None
+    model_name: Optional[str] = None,
+    agent_name: Optional[str] = None
 ) -> str:
     """
     Detailed correlation analysis including output+thought tokens.
@@ -1369,6 +1504,8 @@ def analyze_correlation_detailed(
         
         if model_name:
             where_clauses.append(f"T.model LIKE '%{model_name}%'")
+        if agent_name:
+            where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
         
         where_clause = " AND ".join(where_clauses)
         
@@ -1459,7 +1596,7 @@ def analyze_correlation_detailed(
         return json.dumps({"error": str(e)})
 
 
-def fetch_slow_queries(num_records: int = 20) -> str:
+def fetch_slow_queries(num_records: int = 20, agent_name: Optional[str] = None) -> str:
     """
     Fetches the top N slowest queries from the BigQuery logs and returns metadata only.
     
@@ -1468,11 +1605,17 @@ def fetch_slow_queries(num_records: int = 20) -> str:
     
     Args:
         num_records: The number of records to fetch. Defaults to 10.
+        agent_name: Filter by specific agent (optional)
         
     Returns:
         A JSON string containing the count and list of request IDs with latency.
     """
+    logging.info(f"[PROGRESS] Starting fetch of {num_records} slowest queries")
     try:
+        where_clause = "T.full_request IS NOT NULL AND T.full_response IS NOT NULL"
+        if agent_name:
+            where_clause += f" AND JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'"
+
         query = f"""
         SELECT
           CAST(T.request_id AS STRING) AS request_id,
@@ -1480,8 +1623,7 @@ def fetch_slow_queries(num_records: int = 20) -> str:
         FROM
           `{PROJECT_ID}.{DATASET}.{GEMINI_LOG_TABLE}` AS T
         WHERE
-          T.full_request IS NOT NULL
-          AND T.full_response IS NOT NULL
+          {where_clause}
         ORDER BY
           request_latency_seconds DESC
         LIMIT {num_records}
@@ -1500,7 +1642,7 @@ def fetch_slow_queries(num_records: int = 20) -> str:
                 "latency_seconds": float(row["request_latency_seconds"]) if pd.notna(row["request_latency_seconds"]) else 0.0
             })
         
-        logging.info(f"Successfully fetched {len(request_ids)} request IDs")
+        logging.info(f"[PROGRESS] Successfully fetched {len(request_ids)} request IDs")
         return json.dumps({
             "count": len(request_ids),
             "requests": request_ids
@@ -1526,6 +1668,7 @@ def fetch_single_query(request_id: str) -> str:
     Returns:
         A JSON string containing the full query details.
     """
+    logging.info(f"[PROGRESS] Starting fetch for query {request_id}")
     try:
         query = f"""
         SELECT
@@ -1574,18 +1717,258 @@ def fetch_single_query(request_id: str) -> str:
             "total_token_count": int(row['total_token_count']) if pd.notna(row['total_token_count']) else None
         }
         
-        logging.info(f"Successfully fetched query {request_id}")
+        logging.info(f"[PROGRESS] Successfully fetched query {request_id}")
         return json.dumps(record, cls=AnalysisEncoder, default=str)
     
     except Exception as e:
         error_msg = f"Error fetching query {request_id}: {str(e)}"
-        logging.error(error_msg)
+        logging.error(f"[PROGRESS] Failed to fetch query {request_id}: {str(e)}")
+        return json.dumps({"error": error_msg})
+
+
+def fetch_slow_queries_batch(
+    num_queries: int = 20,
+    time_range: str = "24h",
+    model_name: Optional[str] = None,
+    agent_name: Optional[str] = None
+) -> str:
+    """
+    Fetches multiple slow queries with full details in a SINGLE batch query.
+    
+    This is the RECOMMENDED approach instead of calling fetch_single_query() 
+    multiple times, as it:
+    - Avoids sequential LLM calls that can timeout
+    - Fetches all data in one BigQuery query
+    - Returns complete information for analysis
+    
+    Use this function when you need to analyze multiple slow queries.
+    Only use fetch_single_query() for 1-2 specific examples.
+    
+    Args:
+        num_queries: Number of slowest queries to fetch (default: 20)
+        time_range: Time range to search (default: "24h")
+        model_name: Optional model name filter
+        agent_name: Optional agent name filter
+        
+    Returns:
+        JSON string with array of query details including full request/response
+    """
+    # Cap number of queries to prevent massive payloads that cause timeouts
+    MAX_QUERIES = 20
+    if num_queries > MAX_QUERIES:
+        logging.warning(f"[CONFIG] Capping batch size from {num_queries} to {MAX_QUERIES} to prevent timeouts")
+        num_queries = MAX_QUERIES
+        
+    logging.info(f"[PROGRESS] Starting batch fetch of {num_queries} slowest queries")
+    try:
+        start_time, end_time = parse_time_range(time_range)
+        
+        where_clauses = [
+            f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
+            "T.full_request IS NOT NULL",
+            "T.full_response IS NOT NULL",
+            "JSON_VALUE(T.metadata.request_latency) IS NOT NULL"
+        ]
+        
+        if model_name:
+            where_clauses.append(f"T.model LIKE '%{model_name}%'")
+        if agent_name:
+            where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
+        
+        where_clause = " AND ".join(where_clauses)
+        
+        query = f"""
+        SELECT
+          T.logging_time,
+          CAST(T.request_id AS STRING) AS request_id,
+          T.full_request,
+          T.full_response,
+          T.model,
+          JSON_VALUE(T.full_request.labels.adk_agent_name) AS adk_agent_name,
+          ROUND(SAFE_CAST(JSON_VALUE(T.metadata.request_latency) AS FLOAT64) / 1000.0, 2) AS request_latency_seconds,
+          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.thoughtsTokenCount) AS INT64) AS thoughts_token_count,
+          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) AS output_token_count,
+          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64) AS prompt_token_count,
+          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64) AS total_token_count,
+          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64) AS total_token_count,
+          -- Extract last 500 chars of prompt to capture user question (generic approach)
+          SUBSTR(JSON_VALUE(T.full_request.contents[0].parts[0].text), -500) AS query_preview
+        FROM
+          `{PROJECT_ID}.{DATASET}.{GEMINI_LOG_TABLE}` AS T
+        WHERE
+          {where_clause}
+        ORDER BY request_latency_seconds DESC
+        LIMIT {num_queries}
+        """
+        
+        df = execute_bigquery(query)
+        
+        if df.empty:
+            return json.dumps({"error": "No slow queries found"})
+        
+        # Convert to list of records
+        queries = []
+        for _, row in df.iterrows():
+            record = {
+                "logging_time": row['logging_time'].isoformat() if pd.notna(row['logging_time']) else None,
+                "request_id": row['request_id'],
+                "full_request": json.loads(row['full_request']) if pd.notna(row['full_request']) else None,
+                "full_response": json.loads(row['full_response']) if pd.notna(row['full_response']) else None,
+                "model": row['model'],
+                "adk_agent_name": row['adk_agent_name'] if pd.notna(row['adk_agent_name']) else None,
+                "request_latency_seconds": float(row['request_latency_seconds']) if pd.notna(row['request_latency_seconds']) else None,
+                "thoughts_token_count": int(row['thoughts_token_count']) if pd.notna(row['thoughts_token_count']) else None,
+                "output_token_count": int(row['output_token_count']) if pd.notna(row['output_token_count']) else None,
+                "prompt_token_count": int(row['prompt_token_count']) if pd.notna(row['prompt_token_count']) else None,
+                "total_token_count": int(row['total_token_count']) if pd.notna(row['total_token_count']) else None,
+                "query_preview": row['query_preview'] if pd.notna(row['query_preview']) else None
+            }
+            queries.append(record)
+        
+        logging.info(f"[PROGRESS] Successfully fetched {len(queries)} slow queries in batch")
+        
+        result = {
+            "count": len(queries),
+            "queries": queries,
+            "metadata": {
+                "analyzed_count": len(queries),
+                "requested_count": num_queries if num_queries <= MAX_QUERIES else 50, # Approximate original request if capped
+                "time_range": f"{start_time} to {end_time}",
+                "model_filter": model_name if model_name else "all models"
+            }
+        }
+        
+        if num_queries == MAX_QUERIES:
+             result["metadata"]["warning"] = f"Batch size limited to {MAX_QUERIES} to prevent LLM timeouts. Displaying top {MAX_QUERIES} slowest queries out of requested batch."
+             
+        return json.dumps(result, cls=AnalysisEncoder, default=str)
+    
+    except Exception as e:
+        error_msg = f"Error in batch fetch: {str(e)}"
+        logging.error(f"[PROGRESS] Failed to fetch slow queries batch: {str(e)}")
+        return json.dumps({"error": error_msg})
+
+
+def fetch_fastest_queries(
+    num_queries: int = 20,
+    time_range: str = "24h",
+    model_name: Optional[str] = None,
+    agent_name: Optional[str] = None
+) -> str:
+    """
+    Fetches multiple FASTEST queries (low latency) to serve as a baseline.
+    
+    Use this to compare against slow queries. If a factor (like input tokens) 
+    is high in BOTH slow and fast queries, it is NOT the driver of latency.
+    
+    Args:
+        num_queries: Number of fastest queries to fetch (default: 20)
+        time_range: Time range to search (default: "24h")
+        model_name: Optional model name filter
+        
+    Returns:
+        JSON string with array of query details including full request/response
+    """
+    # Cap number of queries to prevent massive payloads
+    MAX_QUERIES = 20
+    if num_queries > MAX_QUERIES:
+        logging.warning(f"[CONFIG] Capping batch size from {num_queries} to {MAX_QUERIES} to prevent timeouts")
+        num_queries = MAX_QUERIES
+        
+    logging.info(f"[PROGRESS] Starting batch fetch of {num_queries} FASTEST queries (baseline)")
+    try:
+        start_time, end_time = parse_time_range(time_range)
+        
+        where_clauses = [
+            f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
+            "T.full_request IS NOT NULL",
+            "T.full_response IS NOT NULL",
+            "JSON_VALUE(T.metadata.request_latency) IS NOT NULL"
+        ]
+        
+        if model_name:
+            where_clauses.append(f"T.model LIKE '%{model_name}%'")
+        if agent_name:
+            where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
+        
+        where_clause = " AND ".join(where_clauses)
+        
+        query = f"""
+        SELECT
+          T.logging_time,
+          CAST(T.request_id AS STRING) AS request_id,
+          T.full_request,
+          T.full_response,
+          T.model,
+          JSON_VALUE(T.full_request.labels.adk_agent_name) AS adk_agent_name,
+          ROUND(SAFE_CAST(JSON_VALUE(T.metadata.request_latency) AS FLOAT64) / 1000.0, 2) AS request_latency_seconds,
+          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.thoughtsTokenCount) AS INT64) AS thoughts_token_count,
+          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) AS output_token_count,
+          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64) AS prompt_token_count,
+          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64) AS total_token_count,
+          -- Extract last 500 chars of prompt to capture user question (generic approach)
+          SUBSTR(JSON_VALUE(T.full_request.contents[0].parts[0].text), -500) AS query_preview
+        FROM
+          `{PROJECT_ID}.{DATASET}.{GEMINI_LOG_TABLE}` AS T
+        WHERE
+          {where_clause}
+        ORDER BY request_latency_seconds ASC
+        LIMIT {num_queries}
+        """
+        
+        df = execute_bigquery(query)
+        
+        if df.empty:
+            return json.dumps({"error": "No queries found"})
+        
+        # Convert to list of records
+        queries = []
+        for _, row in df.iterrows():
+            record = {
+                "logging_time": row['logging_time'].isoformat() if pd.notna(row['logging_time']) else None,
+                "request_id": row['request_id'],
+                "full_request": json.loads(row['full_request']) if pd.notna(row['full_request']) else None,
+                "full_response": json.loads(row['full_response']) if pd.notna(row['full_response']) else None,
+                "model": row['model'],
+                "adk_agent_name": row['adk_agent_name'] if pd.notna(row['adk_agent_name']) else None,
+                "request_latency_seconds": float(row['request_latency_seconds']) if pd.notna(row['request_latency_seconds']) else None,
+                "thoughts_token_count": int(row['thoughts_token_count']) if pd.notna(row['thoughts_token_count']) else None,
+                "output_token_count": int(row['output_token_count']) if pd.notna(row['output_token_count']) else None,
+                "prompt_token_count": int(row['prompt_token_count']) if pd.notna(row['prompt_token_count']) else None,
+                "total_token_count": int(row['total_token_count']) if pd.notna(row['total_token_count']) else None,
+                "query_preview": row['query_preview'] if pd.notna(row['query_preview']) else None
+            }
+            queries.append(record)
+        
+        logging.info(f"[PROGRESS] Successfully fetched {len(queries)} FASTEST queries in batch")
+        
+        result = {
+            "count": len(queries),
+            "queries": queries,
+            "metadata": {
+                "analyzed_count": len(queries),
+                "requested_count": num_queries if num_queries <= MAX_QUERIES else 50,
+                "time_range": f"{start_time} to {end_time}",
+                "model_filter": model_name if model_name else "all models",
+                "type": "fastest_queries_baseline"
+            }
+        }
+        
+        if num_queries == MAX_QUERIES:
+             result["metadata"]["warning"] = f"Batch size limited to {MAX_QUERIES} to prevent LLM timeouts."
+             
+        return json.dumps(result, cls=AnalysisEncoder, default=str)
+    
+    except Exception as e:
+        error_msg = f"Error in batch fetch: {str(e)}"
+        logging.error(f"[PROGRESS] Failed to fetch fastest queries batch: {str(e)}")
         return json.dumps({"error": error_msg})
 
 
 def get_token_velocity(
     time_range: str = "7d",
-    model_name: Optional[str] = None
+    model_name: Optional[str] = None,
+    agent_name: Optional[str] = None
 ) -> str:
     """
     Analyze Time Per Output Token (TPOT) to distinguish between slow generation and verbose output.
@@ -1606,6 +1989,8 @@ def get_token_velocity(
         
         if model_name:
             where_clauses.append(f"T.model LIKE '%{model_name}%'")
+        if agent_name:
+            where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
             
         where_clause = " AND ".join(where_clauses)
         
@@ -1687,6 +2072,7 @@ def get_token_velocity(
 def analyze_request_queuing(
     time_range: str = "24h",
     model_name: Optional[str] = None,
+    agent_name: Optional[str] = None,
     burst_window_seconds: int = 1
 ) -> str:
     """
@@ -1707,6 +2093,8 @@ def analyze_request_queuing(
         
         if model_name:
             where_clauses.append(f"T.model LIKE '%{model_name}%'")
+        if agent_name:
+            where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
         
         where_clause = " AND ".join(where_clauses)
         
@@ -1774,21 +2162,41 @@ def analyze_request_queuing(
 
 
 def check_kpi_compliance(
-    time_range: str = "24h",
-    mean_latency_target: float = 3.0,
-    p95_latency_target: float = 5.0
+    time_range: Optional[str] = None,
+    mean_latency_target: Optional[float] = None,
+    p95_latency_target: Optional[float] = None,
+    agent_name: Optional[str] = None
 ) -> str:
     """
     Check if current performance meets defined KPIs.
     
     Args:
-        time_range: Time range to analyze
-        mean_latency_target: Target for mean latency in seconds (default 3.0)
-        p95_latency_target: Target for P95 latency in seconds (default 5.0)
+        time_range: Time range to analyze (defaults to config or "24h")
+        mean_latency_target: Target for mean latency (defaults to config or 3.0)
+        p95_latency_target: Target for P95 latency (defaults to config or 5.0)
+        agent_name: Filter by specific agent (defaults to config or None)
     """
     try:
+        # Load config to get defaults
+        config_str = get_analysis_config()
+        config = json.loads(config_str) if not config_str.startswith("Error") else {}
+        
+        # Apply defaults from config if not provided
+        if time_range is None:
+            days = config.get("time_period_days", 1)
+            time_range = f"{days}d"
+            
+        if mean_latency_target is None:
+            mean_latency_target = config.get("kpis", {}).get("mean_latency_target", 3.0)
+            
+        if p95_latency_target is None:
+            p95_latency_target = config.get("kpis", {}).get("p95_latency_target", 5.0)
+            
+        if agent_name is None:
+            agent_name = config.get("agent_name")
+
         # Reuse get_overall_statistics to get current metrics
-        stats_json = get_overall_statistics(time_range=time_range)
+        stats_json = get_overall_statistics(time_range=time_range, agent_name=agent_name)
         stats = json.loads(stats_json)
         
         if "error" in stats:
@@ -1815,7 +2223,8 @@ def check_kpi_compliance(
         
         result = {
             "metadata": {
-                "time_range": time_range
+                "time_range": time_range,
+                "agent_name": agent_name
             },
             "compliance": compliance,
             "summary": f"KPI Status: {compliance['overall_status']}. Mean: {current_mean:.2f}s (Target {mean_latency_target}s), P95: {current_p95:.2f}s (Target {p95_latency_target}s)"
@@ -1878,3 +2287,28 @@ def save_analysis_report(
         logging.error(error_msg)
         return json.dumps({"error": error_msg})
 
+
+def get_analysis_config() -> str:
+    """Reads the analysis configuration from autonomous_analysis_90d.json.
+    
+    Returns:
+        JSON string containing the configuration (time period, KPIs, agent filter, etc.).
+    """
+    try:
+        # Assuming the config file is in the parent directory of agents/latency_analyzer
+        # agents/latency_analyzer/utils.py -> ../../autonomous_analysis_90d.json
+        config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "autonomous_analysis_90d.json")
+        
+        if not os.path.exists(config_path):
+             # Fallback to current directory or relative path if running from root
+             config_path = "autonomous_analysis_90d.json"
+             
+        if not os.path.exists(config_path):
+            return json.dumps({"error": f"Config file not found at {config_path}"})
+
+        with open(config_path, 'r') as f:
+            data = json.load(f)
+            # Return only the config section if it exists, otherwise the whole file
+            return json.dumps(data.get("config", data))
+    except Exception as e:
+        return json.dumps({"error": f"Error reading config: {str(e)}"})

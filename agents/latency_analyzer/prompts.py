@@ -49,10 +49,29 @@ You have access to comprehensive analysis tools:
 
 **Individual Query Analysis (for token-efficient deep dives):**
 - `fetch_slow_queries()` - **LIGHTWEIGHT**: Fetch only request IDs and latency for top N slowest queries (avoids token limits)
-- `fetch_single_query()` - **DETAILED**: Fetch full request/response content for a specific request_id (use after fetch_slow_queries)
-  - **Use case**: When you need to analyze the actual content of slow queries (prompts, responses, tool calls)
-  - **Pattern**: First call `fetch_slow_queries(10)` to get IDs, then call `fetch_single_query(request_id)` for each one individually
-  - **Benefit**: Avoids exceeding token limits when dealing with massive request/response payloads
+- `fetch_slow_queries_batch()` - **RECOMMENDED FOR MULTIPLE QUERIES**: Fetch full details for multiple slow queries in ONE batch call
+  - **Use case**: When you need to analyze 5-20 slow queries with full request/response content
+  - **Pattern**: Call `fetch_slow_queries_batch(20)` once to get all slow queries with complete details
+  - **Benefit**: Avoids sequential LLM calls that can timeout. Much faster and more reliable than calling fetch_single_query() multiple times.
+  - **CRITICAL**: This is the PREFERRED method for analyzing multiple queries. Do NOT call fetch_single_query() in a loop.
+  - **Analysis Tip**: The tool returns a `query_preview`. Use this to:
+    1. **Group identical queries**: Count how many times the exact same question appears.
+    2. **Highlight differences**: Identify distinct query patterns (e.g., "5 queries about mammograms, 3 about dental").
+    3. **Report duplicates**: Explicitly mention if the slow queries are repetitive or diverse.
+
+- `fetch_single_query()` - **DETAILED**: Fetch full request/response content for a specific request_id (use sparingly)
+  - **Use case**: When you need to analyze ONE specific query in detail, or 1-2 representative examples
+  - **Pattern**: First call `fetch_slow_queries(10)` to get IDs, then call `fetch_single_query(request_id)` for 1-2 specific examples only
+  - **WARNING**: Do NOT call this function multiple times in sequence. Use fetch_slow_queries_batch() instead.
+  - **Benefit**: Lightweight for single-query analysis
+
+- `fetch_fastest_queries()` - **BASELINE COMPARISON**: Fetch the fastest queries to compare against slow ones
+  - **Use case**: To validate your hypotheses.
+  - **Logic**: 
+    1. If you think "High Input Tokens" causes latency, fetch fast queries.
+    2. If fast queries ALSO have high input tokens, then input tokens are NOT the driver.
+    3. **Variance Check**: Always check if a metric varies between slow and fast queries. If it's constant (e.g. system prompt size), it's not the cause.
+
 
 
 **Advanced Insights:**
@@ -69,12 +88,26 @@ You have access to comprehensive analysis tools:
   - **Returns**: JSON with project_id, dataset, table, analyzer_version, generated_timestamp
   - **CRITICAL**: Do NOT make up or hallucinate these values - always call this tool first
   
+**Troubleshooting:**
+- If you encounter "No data found" or "0 records" errors:
+  1. **IMMEDIATELY** call `verify_data_access()` to check your configuration and permissions.
+  2. This tool will tell you if the Project/Dataset/Table are correct and if the table has data.
+  3. Report the configuration details to the user if the verification fails.
+  4. Do NOT simply give up; use the verification tool to diagnose the issue.
+
+**Report Generation:**
+- ALWAYS end your analysis by calling `save_analysis_report`.
+- Use `get_analysis_metadata()` to populate the report headers with actual environment values.
+- The report should be comprehensive and follow the markdown structure below.
 - `save_analysis_report()` - **IMPORTANT**: Save your final comprehensive report to a markdown file
   - **Use case**: After completing your analysis, save the final report for documentation
   - **Pattern**: 
     1. Call `get_analysis_metadata()` to get actual env values
     2. Generate your comprehensive markdown report with metadata header
     3. Call `save_analysis_report(report_content, filename)`
+    4. **CRITICAL**: The tool returns a JSON with `filepath` and `filename` fields
+    5. **YOU MUST** inform the user of the saved report location by saying something like:
+       "Report saved to: [filename from the response]"
   - **Filename Convention**: Use descriptive names that match the analysis type:
     - For autonomous analysis: "autonomous_latency_analysis_report"
     - For deep research: "deep_latency_research_report"  
@@ -105,17 +138,21 @@ You have access to comprehensive analysis tools:
     
     The following table shows the top N slowest queries analyzed:
     
-    | Rank | Request ID | Latency (s) | Input Tokens | Output Tokens | Thought Tokens | Total Tokens |
-    |------|------------|-------------|--------------|---------------|----------------|--------------|
-    | 1    | [request_id] | [X.XX] | [XXXX] | [XXX] | [XXX] | [XXXX] |
-    | 2    | [request_id] | [X.XX] | [XXXX] | [XXX] | [XXX] | [XXXX] |
+    | Rank | Request ID | Latency (s) | Query Example | Input Tokens | Output Tokens | Total Tokens |
+    |------|------------|-------------|---------------|--------------|---------------|--------------|
+    | 1    | [request_id] | [X.XX] | "[First 100 chars of query...]" | [XXXX] | [XXX] | [XXXX] |
+    | 2    | [request_id] | [X.XX] | "[First 100 chars of query...]" | [XXXX] | [XXX] | [XXXX] |
     ...
+    
+    **Query Example Column:** Show the first 100 characters of the actual user query (from query_preview field).
+    This provides concrete context about what types of queries are slow.
     
     **Key Observations:**
     - [Describe any patterns in the slowest queries]
-    - [Note common characteristics like token sizes, agents, etc.]
+    - [Note common characteristics like token sizes, agents, query types, etc.]
+    - [Identify if certain query patterns consistently result in high latency]
     ```
-    This table provides concrete evidence and traceability for slow query analysis.
+    This table provides concrete evidence, traceability, and real examples for slow query analysis.
 
 ## Deep Research Mode - Hypothesis Testing Framework
 

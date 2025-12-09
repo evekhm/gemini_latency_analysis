@@ -23,14 +23,18 @@ from .utils import (
     # Import slow query tools from slow_query_analyzer
     fetch_slow_queries,
     fetch_single_query,
+    fetch_slow_queries_batch,  # Batch fetch for efficiency
+    fetch_fastest_queries,     # Baseline comparison
     # Report generation
     save_analysis_report,
     get_analysis_metadata,  # Get actual env values for report headers
+    verify_data_access,  # Verify configuration and access
     # New TPOT tool
     get_token_velocity,
     # New KPI and Queuing tools
     analyze_request_queuing,
-    check_kpi_compliance
+    check_kpi_compliance,
+    get_analysis_config  # Tool to read config
 )
 
 __dir__ = os.path.dirname(__file__)
@@ -66,18 +70,30 @@ latency_analyzer = LlmAgent(
         # Individual query analysis (from slow_query_analyzer)
         fetch_slow_queries,  # Fetch metadata for slowest queries
         fetch_single_query,  # Fetch full details for a specific query
+        fetch_slow_queries_batch,  # Batch fetch multiple queries efficiently
         # Report generation
         save_analysis_report,  # Save final report to markdown file
         get_analysis_metadata,  # Get actual environment metadata
+        verify_data_access,    # Verify BigQuery configuration and access
         # TPOT Analysis
         get_token_velocity,   # Analyze generation speed vs volume
         # KPI & Queuing
         analyze_request_queuing, # Detect micro-bursts and queuing
-        check_kpi_compliance     # Check against performance targets
+        check_kpi_compliance,     # Check against performance targets
+        get_analysis_config      # Read analysis configuration
     ],
     generate_content_config=types.GenerateContentConfig(
         temperature=0,
-        max_output_tokens=8192
+        max_output_tokens=8192,
+        http_options=types.HttpOptions(
+            timeout=120000,  # 120 seconds (in ms)
+            retry_options=types.HttpRetryOptions(
+                attempts=3,  # Retry up to 3 times
+                initial_delay=2.0,  # Start with 2 second delay
+                max_delay=60.0,  # Max 60 second delay between retries
+                exp_base=2.0  # Exponential backoff base
+            )
+        )
     )
 )
 
