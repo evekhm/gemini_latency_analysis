@@ -1,15 +1,16 @@
 {
     "state": {},
+    "config": {
+        "time_period_days": "90d",
+        "analysis_scope": "deep_research",
+        "kpis": {
+            "mean_latency_target": 3.0,
+            "p95_latency_target": 5.0
+        },
+        "num_slowest_queries": 25,
+        "agent_name": null
+    },
     "queries": [
-        "Perform a comprehensive latency analysis for the last 90 days. I want deep research with hypothesis testing.",
-        "Start with overall statistics and identify the key performance metrics.",
-        "Analyze correlation patterns in detail, especially for output+thought tokens.",
-        "Cluster the slow queries to identify patterns and groups.",
-        "Compare agent performance and identify which agents are most problematic.",
-        "Analyze cost breakdown by agent and identify the most expensive operations.",
-        "Check if there's been performance degradation over time.",
-        "Fetch the top 5 slowest queries and analyze each one individually for root causes.",
-        "For each of the slowest queries, examine the full request and response content to understand what makes them slow.",
-        "Provide a comprehensive report with: 1) Executive summary, 2) Hypothesis testing results (accepted/rejected), 3) Key findings with evidence, 4) Root causes, 5) Prioritized recommendations with expected impact, 6) Follow-up questions for deeper investigation."
+        "Perform deep research latency analysis with comprehensive hypothesis testing for the configured time period."
     ]
 }

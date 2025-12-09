@@ -221,28 +221,76 @@ The `latency_analyzer` agent is a comprehensive AI-powered tool that automates l
 
 **Quick Start - Autonomous Analysis (Recommended):**
 
-The best way to use the agent is with **autonomous mode**, where a single comprehensive query lets the agent make intelligent decisions:
+The best way to use the agent is with **autonomous mode**, where the system prompt contains the workflow logic and the config file provides parameters:
 
 ```shell
 ./run_autonomous_analysis.sh
 ```
 
-This uses `autonomous_analysis_90d.json` which contains a single query that instructs the agent to:
-- Generate and test hypotheses systematically
-- Make intelligent tool choices (e.g., use alternatives if a tool fails)
-- Adapt analysis based on findings
-- Analyze correlations, clusters, costs, and individual queries
-- Generate a comprehensive final report
-- **Save the report to `reports/` directory with timestamp**
+**Configuration Format:**
 
-**Configuration:**
-The agent reads configuration from `autonomous_analysis_90d.json` (or the file passed to `adk run`). You can modify the `config` block to change:
-- `time_period_days`: Analysis window (e.g., 90)
-- `kpis`: Target latency values (Mean, P95)
-- `agent_name`: Filter for a specific agent (or `null` for all agents)
-- `num_slowest_queries`: Number of slow queries to fetch
+The agent uses JSON config files with two key sections:
+1. **`config`**: Parameters for the analysis (time range, KPI targets, scope, etc.)
+2. **`queries`**: A concise instruction (1-2 sentences) describing the analysis focus
 
-The agent will create a file like: `reports/latency_analysis_report_20251201_162530.md`
+**Example** (`autonomous_analysis_90d.json`):
+```json
+{
+    "state": {},
+    "config": {
+        "time_period_days": "90d",
+        "analysis_scope": "autonomous",
+        "kpis": {
+            "mean_latency_target": 3.0,
+            "p95_latency_target": 5.0
+        },
+        "num_slowest_queries": 20,
+        "agent_name": null
+    },
+    "queries": [
+        "Perform autonomous latency analysis for the configured time period."
+    ]
+}
+```
+
+**Configuration Parameters:**
+- **`time_period_days`**: Analysis window (e.g., "24h", "7d", "90d", "last 27 days", "all")
+  > [!WARNING]
+  > Using `"time_period_days": "all"` can be very slow and may cause BigQuery operations to time out, as it queries the entire data history. Not recommended for routine analysis.
+  
+- **`analysis_scope`**: Determines the workflow depth
+  - `"standard"`: Quick health check (KPI compliance, basic correlation, patterns)
+  - `"autonomous"`: Comprehensive analysis with hypothesis testing (recommended)
+  - `"deep_research"`: Exhaustive research with detailed evidence and follow-up questions
+  
+- **`kpis`**: Target latency values
+  - `mean_latency_target`: Target for mean latency in seconds (e.g., 3.0)
+  - `p95_latency_target`: Target for P95 latency in seconds (e.g., 5.0)
+  
+- **`agent_name`**: Filter for a specific agent (e.g., "my_agent") or `null` for all agents
+
+- **`num_slowest_queries`**: Number of slow queries to analyze in detail (e.g., 20)
+
+**Pre-configured Examples:**
+
+| Config File | Scope | Time Range | Use Case |
+|-------------|-------|-----------|----------|
+| `autonomous_analysis_90d.json` | autonomous | 90d | Comprehensive 90-day audit |
+| `comprehensive_analysis_90d.json` | deep_research | 90d | Exhaustive research with hypothesis testing |
+| `daily_kpi_check.json` | standard | 24h | Quick daily health check |
+| `deep_agent_analysis.json` | deep_research | 7d | In-depth single agent investigation |
+| `cost_analysis.json` | autonomous | 30d | Cost-focused optimization |
+
+**How It Works:**
+
+The workflow logic is now in the system prompt (`agents/latency_analyzer/prompts.py`). The agent:
+1. Calls `get_analysis_config()` to read the config parameters
+2. Selects the appropriate workflow based on `analysis_scope`
+3. Follows a systematic analysis approach
+4. Generates a comprehensive report
+5. Saves the report to `reports/` directory with timestamp
+
+The agent will create a file like: `reports/autonomous_latency_analysis_report_20251201_162530.md`
 
 Alternatively, run it manually:
 

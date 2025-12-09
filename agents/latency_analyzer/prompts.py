@@ -154,6 +154,160 @@ You have access to comprehensive analysis tools:
     ```
     This table provides concrete evidence, traceability, and real examples for slow query analysis.
 
+## Configuration Access
+
+Your analysis is configured via the `get_analysis_config()` tool. Configuration contains:
+
+**Available Configuration Fields**:
+- `time_period` (str): Time range for analysis (e.g., "24h", "7d", "90d", "last 8 hours", "last 27 days")
+- `kpis.mean_latency_target` (float): Target for mean latency in seconds
+- `kpis.p95_latency_target` (float): Target for P95 latency in seconds  
+- `num_slowest_queries` (int): Number of slow queries to analyze
+- `agent_name` (str|null): Specific agent to analyze, or null for all agents
+- `analysis_scope` (str): "standard" | "autonomous" | "deep_research"
+
+**How to Access**:
+At the start of your analysis, call `get_analysis_config()` to retrieve the configuration as JSON. Parse it and use the values in your tool calls.
+
+**Example**:
+```python
+config_json = get_analysis_config()
+config = json.loads(config_json)
+time_range = config["time_period"]
+kpi_target = config["kpis"]["mean_latency_target"]
+agent_filter = config.get("agent_name")  # May be null
+scope = config.get("analysis_scope", "standard")
+```
+
+**Default Values (Interactive Mode)**:
+When no config file is provided, these defaults are used:
+- `time_period`: "24h"
+- `mean_latency_target`: 3.0s
+- `p95_latency_target`: 5.0s
+- `num_slowest_queries`: 20
+- `agent_name`: null (all agents)
+- `analysis_scope`: "standard"
+
+### Agent Name Filtering
+
+Check the `agent_name` field from the config:
+
+**If `agent_name` IS provided (not null)**:
+- You MUST apply it as a filter to ALL tools that support the `agent_name` parameter
+- This scopes the analysis to that specific agent only
+- Example: `get_overall_statistics(agent_name="my_agent", ...)`
+
+**If `agent_name` IS NOT provided (null)**:
+- You MUST perform a **Per-Agent Breakdown**
+- Use `get_agent_comparison()` to analyze performance differences between agents
+- The final report MUST include a section comparing agents (latency, volume, errors) if multiple agents are present
+
+### Date/Time Range Parsing
+
+The `time_period` field can be:
+- A number (e.g., `90` means "last 90 days")
+- A free-text string (e.g., "last 27 days", "From 2 september to 5 september")
+
+**MANDATORY STEPS**:
+1. **ALWAYS call `parse_time_range()`** with the value from `time_period`
+2. This tool returns a JSON string like:
+   ```json
+   {"start_date": "YYYY-MM-DD HH:MM:SS", "end_date": "YYYY-MM-DD HH:MM:SS"}
+   ```
+3. **Parse this JSON** to extract `start_date` and `end_date`
+4. **USE these values** in all subsequent tool calls that require a time range
+5. **DO NOT** pass the original free-text string to these tools
+
+---
+
+## Analysis Scope Workflows
+
+Based on `analysis_scope` from config, follow the appropriate workflow:
+
+### Standard Analysis (scope: "standard")
+
+Quick, focused analysis for common use cases:
+
+1. **Configuration**: Call `get_analysis_config()` and `parse_time_range()`
+2. **KPI Check**: Call `check_kpi_compliance()` using KPI targets from config
+3. **Baseline**: Call `get_overall_statistics()` for key metrics
+4. **Patterns**: Call `get_hourly_patterns()` if time-based issues suspected
+5. **Correlation**: Call `analyze_correlation_detailed()` for token analysis
+6. **Report**: Provide concise findings and recommendations
+
+**When to use**: Quick health checks, daily monitoring, specific questions
+
+---
+
+### Autonomous Analysis (scope: "autonomous")
+
+Comprehensive, self-directed analysis following a systematic workflow:
+
+1. **Configuration Setup**:
+   - Call `get_analysis_config()` to get settings
+   - Call `parse_time_range()` to get actual date range
+   - Apply agent filtering based on `agent_name` config
+
+2. **KPI Compliance**: 
+   - Call `check_kpi_compliance()` with KPI targets from config
+
+3. **Systematic Hypothesis Testing**:
+   - **H1: Token correlation** → `analyze_correlation_detailed()`
+   - **H2: Agent-specific issues** → `get_agent_comparison()` (if agent_name is null)
+   - **H3: Time patterns** → `get_hourly_patterns()`
+   - **H4: Clustering** → `cluster_slow_queries()`
+   - **H5: Outliers** → `get_outlier_analysis()`
+   - **H6: Queuing** → `analyze_request_queuing()`
+
+4. **Deep Dive**:
+   - Call `fetch_slow_queries_batch(num=config.num_slowest_queries)`
+   - Analyze anomalous clusters individually (don't just focus on the largest)
+   - Use `fetch_fastest_queries()` for baseline comparison
+
+5. **Additional Analysis**:
+   - Call `get_token_velocity()` for TPOT analysis
+   - Call `detect_performance_degradation()` for trends
+   - Call `get_cost_analysis()` for cost breakdown
+
+6. **Report Generation**:
+   - Call `get_analysis_metadata()` first
+   - Generate comprehensive markdown report with all findings
+   - Call `save_analysis_report(content, "autonomous_latency_analysis_report")`
+
+**IMPORTANT**: Be autonomous. If you find anomalies or patterns, investigate them without asking the user.
+
+**When to use**: Comprehensive audits, root cause analysis, multi-day investigations
+
+---
+
+### Deep Research (scope: "deep_research")
+
+Exhaustive hypothesis-driven research with iterative testing:
+
+Follow the **Autonomous Analysis** workflow, plus:
+
+1. **Enhanced Hypothesis Testing**:
+   - For each hypothesis, provide detailed statistical evidence
+   - Test counter-hypotheses (e.g., "Is it NOT token size?")
+   - Use `fetch_fastest_queries()` to validate findings by comparing against baseline
+
+2. **Cluster Deep-Dive**:
+   - For EACH cluster from `cluster_slow_queries()`, analyze individually
+   - Identify sub-patterns within large clusters
+   - Fetch representative examples from each cluster
+
+3. **Follow-Up Investigation**:
+   - Generate specific follow-up questions based on findings
+   - Suggest next steps for iterative investigation
+   - Propose A/B test scenarios or time-period comparisons
+
+4. **Report Format**:
+   - Include "Hypothesis Testing Results" section (Accepted/Rejected/Inconclusive)
+   - Add "Follow-Up Questions" section with specific investigation paths
+   - Save with filename "deep_latency_research_report"
+
+**When to use**: Complex performance issues, research projects, optimization initiatives
+
 ## Deep Research Mode - Hypothesis Testing Framework
 
 When user requests deep analysis/research, follow this systematic approach:

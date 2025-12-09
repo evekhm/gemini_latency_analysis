@@ -39,36 +39,124 @@ class AnalysisEncoder(json.JSONEncoder):
         return super(AnalysisEncoder, self).default(obj)
 
 
-def parse_time_range(time_range: str) -> tuple[str, str]:
+def parse_time_range(time_range: str) -> str:
     """
     Parse time range string into start and end timestamps.
     
-    Formats:
-    - "24h" -> last 24 hours
-    - "7d" -> last 7 days
-    - "30d" -> last 30 days
-    - "YYYY-MM-DD to YYYY-MM-DD" -> custom range
+    Supports formats:
+    - "24h", "7d" (last N hours/days)
+    - "24h ago", "7d ago" (relative past)
+    - "YYYY-MM-DD" (specific date)
+    - "now" (current time)
+    - "2 september" (natural language)
+    - Ranges: "start to end", "from start to end"
     """
-    now = datetime.utcnow()
+    from dateutil import parser
+    from dateutil.relativedelta import relativedelta
     
-    if time_range.endswith('h'):
-        hours = int(time_range[:-1])
-        start = now - timedelta(hours=hours)
+    now = datetime.utcnow()
+    time_range = time_range.strip().lower()
+    
+    if time_range == 'all':
+        start = datetime(2000, 1, 1)
         end = now
-    elif time_range.endswith('d'):
-        days = int(time_range[:-1])
-        start = now - timedelta(days=days)
-        end = now
-    elif ' to ' in time_range:
-        start_str, end_str = time_range.split(' to ')
-        start = datetime.strptime(start_str.strip(), '%Y-%m-%d')
-        end = datetime.strptime(end_str.strip(), '%Y-%m-%d') + timedelta(days=1)
-    else:
-        # Default to last 24 hours
+        return json.dumps({"start_date": start.strftime('%Y-%m-%d %H:%M:%S'), "end_date": end.strftime('%Y-%m-%d %H:%M:%S')})
+
+    
+    # Strip "from " prefix if present
+    if time_range.startswith('from '):
+        time_range = time_range[5:].strip()
+    
+    # Helper to parse single date point
+    def parse_point(s: str) -> datetime:
+        s = s.strip()
+        if s == 'now':
+            return now
+        
+        # Handle relative "ago" formats
+        if s.endswith(' ago'):
+            s = s[:-4].strip()
+        
+        # Handle simple relative formats (with or without "ago")
+        if s.endswith('h'):
+            try:
+                return now - timedelta(hours=int(s[:-1]))
+            except ValueError:
+                pass
+        if s.endswith('d'):
+            try:
+                return now - timedelta(days=int(s[:-1]))
+            except ValueError:
+                pass
+        
+        # Handle "last X days/hours/months"
+        if s.startswith('last '):
+            val = s[5:].strip()
+            if val.endswith(' days'):
+                try:
+                    return now - timedelta(days=int(val[:-5]))
+                except ValueError:
+                    pass
+            if val.endswith(' hours'):
+                try:
+                    return now - timedelta(hours=int(val[:-6]))
+                except ValueError:
+                    pass
+            if val.endswith(' month'):
+                 return now - relativedelta(months=1)
+            if val.endswith(' months'):
+                try:
+                    return now - relativedelta(months=int(val[:-7]))
+                except ValueError:
+                    pass
+
+        # Use dateutil for everything else (absolute dates, natural language)
+        try:
+            # default to current year if missing, fuzzy=True allows ignoring noise
+            return parser.parse(s, default=now, fuzzy=True)
+        except (ValueError, TypeError):
+            pass
+            
+        # Fallback/Error
+        raise ValueError(f"Could not parse date format: '{s}'")
+
+    try:
+        if ' to ' in time_range:
+            parts = time_range.split(' to ')
+            start_str, end_str = parts[0], parts[1]
+        elif '-' in time_range and len(time_range.split('-')) == 3 and time_range.count('.') == 2: # Heuristic for DD.MM.YYYY-DD.MM.YYYY
+             parts = time_range.split('-')
+             if len(parts) == 2: # e.g. 10.10.2025-12.12.2025
+                 start_str, end_str = parts[0], parts[1]
+             else: # Likely not a range of this type
+                 start_str, end_str = time_range, None
+        else:
+            start_str, end_str = time_range, None
+
+        if end_str:
+            start = parse_point(start_str)
+            end = parse_point(end_str)
+            # If end seems to be just a date, extend to end of day
+            if end.hour == 0 and end.minute == 0 and end.second == 0 and len(end_str.strip()) <= 10:
+                end += timedelta(days=1, microseconds=-1)
+        else:
+            # Single value: "24h" means last 24 hours (end=now)
+            # "last month" means last month to now
+            # "2 september" means 2 september to now
+            start = parse_point(time_range)
+            end = now
+            # Adjust start if it's a duration like "24h" to be relative to end
+            if time_range.endswith('h') or time_range.endswith('d') or time_range.startswith('last '):
+                 # Re-parse with now=end to get the start relative to now
+                 # This is a bit redundant, the parse_point already does this.
+                 pass
+            
+    except Exception as e:
+        logging.warning(f"Error parsing time range '{time_range}': {e}. Defaulting to 24h.")
         start = now - timedelta(hours=24)
         end = now
     
-    return start.strftime('%Y-%m-%d %H:%M:%S'), end.strftime('%Y-%m-%d %H:%M:%S')
+    return json.dumps({"start_date": start.strftime('%Y-%m-%d %H:%M:%S'), "end_date": end.strftime('%Y-%m-%d %H:%M:%S')})
 
 
 def get_analysis_metadata() -> str:
@@ -163,7 +251,7 @@ def verify_data_access() -> str:
     return json.dumps(result, cls=AnalysisEncoder, default=str)
 
 
-def execute_bigquery(query: str, timeout: int = 300):
+def execute_bigquery(query: str, timeout: int = 1200):
     """Execute BigQuery query with timeout protection.
     
     Args:
@@ -214,7 +302,8 @@ def get_overall_statistics(
         JSON string with overall statistics including all percentiles
     """
     try:
-        start_time, end_time = parse_time_range(time_range)
+        time_range_dict = json.loads(parse_time_range(time_range))
+        start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
         
         # Build WHERE clause
         where_clauses = [
@@ -317,7 +406,8 @@ def get_latency_distribution(
     Returns histogram data showing how many requests fall into each latency category.
     """
     try:
-        start_time, end_time = parse_time_range(time_range)
+        time_range_dict = json.loads(parse_time_range(time_range))
+        start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
         
         where_clauses = [
             f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
@@ -414,7 +504,8 @@ def get_hourly_patterns(
     Returns hourly averages, request counts, and identifies peak hours.
     """
     try:
-        start_time, end_time = parse_time_range(time_range)
+        time_range_dict = json.loads(parse_time_range(time_range))
+        start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
         
         where_clauses = [
             f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
@@ -520,7 +611,8 @@ def get_agent_comparison(
     Returns per-agent statistics including calls, latency, and token usage.
     """
     try:
-        start_time, end_time = parse_time_range(time_range)
+        time_range_dict = json.loads(parse_time_range(time_range))
+        start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
         
         where_clauses = [
             f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
@@ -616,7 +708,8 @@ def get_token_correlation(
     Returns correlation coefficients and scatter plot data.
     """
     try:
-        start_time, end_time = parse_time_range(time_range)
+        time_range_dict = json.loads(parse_time_range(time_range))
+        start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
         
         where_clauses = [
             f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
@@ -700,7 +793,8 @@ def get_outlier_analysis(
     Returns list of outlier requests with full details.
     """
     try:
-        start_time, end_time = parse_time_range(time_range)
+        time_range_dict = json.loads(parse_time_range(time_range))
+        start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
         
         where_clauses = [
             f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
@@ -798,7 +892,8 @@ def get_slowest_queries(
     Returns request IDs and metadata for the slowest queries.
     """
     try:
-        start_time, end_time = parse_time_range(time_range)
+        time_range_dict = json.loads(parse_time_range(time_range))
+        start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
         
         where_clauses = [
             f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
@@ -970,7 +1065,8 @@ def get_concurrent_request_impact(
     Groups requests into time buckets and correlates concurrency with latency.
     """
     try:
-        start_time, end_time = parse_time_range(time_range)
+        time_range_dict = json.loads(parse_time_range(time_range))
+        start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
         
         where_clauses = [
             f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
@@ -1065,7 +1161,8 @@ def detect_performance_degradation(
     Compares recent performance to baseline to identify trends.
     """
     try:
-        start_time, end_time = parse_time_range(time_range)
+        time_range_dict = json.loads(parse_time_range(time_range))
+        start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
         
         where_clauses = [
             f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
@@ -1150,7 +1247,8 @@ def get_cost_analysis(
     Provides cost breakdown by agent and identifies expensive operations.
     """
     try:
-        start_time, end_time = parse_time_range(time_range)
+        time_range_dict = json.loads(parse_time_range(time_range))
+        start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
         
         where_clauses = [
             f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
@@ -1242,8 +1340,11 @@ def compare_time_periods(
     Useful for before/after analysis or A/B testing validation.
     """
     try:
-        start1, end1 = parse_time_range(period1)
-        start2, end2 = parse_time_range(period2)
+        time_range_dict1 = json.loads(parse_time_range(period1))
+        start1, end1 = time_range_dict1['start_date'], time_range_dict1['end_date']
+
+        time_range_dict2 = json.loads(parse_time_range(period2))
+        start2, end2 = time_range_dict2['start_date'], time_range_dict2['end_date']
         
         def get_period_stats(start, end):
             where_clauses = [
@@ -1337,7 +1438,8 @@ def cluster_slow_queries(
     Returns clusters with representative examples and statistics.
     """
     try:
-        start_time, end_time = parse_time_range(time_range)
+        time_range_dict = json.loads(parse_time_range(time_range))
+        start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
         
         where_clauses = [
             f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
@@ -1493,7 +1595,8 @@ def analyze_correlation_detailed(
     Provides comprehensive correlation matrix and statistical significance.
     """
     try:
-        start_time, end_time = parse_time_range(time_range)
+        time_range_dict = json.loads(parse_time_range(time_range))
+        start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
         
         where_clauses = [
             f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
@@ -1761,7 +1864,8 @@ def fetch_slow_queries_batch(
         
     logging.info(f"[PROGRESS] Starting batch fetch of {num_queries} slowest queries")
     try:
-        start_time, end_time = parse_time_range(time_range)
+        time_range_dict = json.loads(parse_time_range(time_range))
+        start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
         
         where_clauses = [
             f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
@@ -1877,7 +1981,8 @@ def fetch_fastest_queries(
         
     logging.info(f"[PROGRESS] Starting batch fetch of {num_queries} FASTEST queries (baseline)")
     try:
-        start_time, end_time = parse_time_range(time_range)
+        time_range_dict = json.loads(parse_time_range(time_range))
+        start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
         
         where_clauses = [
             f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
@@ -1979,7 +2084,8 @@ def get_token_velocity(
     Low TPOT (< 0.05s/token) but high latency indicates verbose output (generating too much text).
     """
     try:
-        start_time, end_time = parse_time_range(time_range)
+        time_range_dict = json.loads(parse_time_range(time_range))
+        start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
         
         where_clauses = [
             f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
@@ -2082,7 +2188,8 @@ def analyze_request_queuing(
     lead to increased latency, suggesting a queuing mechanism is delaying execution.
     """
     try:
-        start_time, end_time = parse_time_range(time_range)
+        time_range_dict = json.loads(parse_time_range(time_range))
+        start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
         
         where_clauses = [
             f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
@@ -2183,7 +2290,7 @@ def check_kpi_compliance(
         
         # Apply defaults from config if not provided
         if time_range is None:
-            days = config.get("time_period_days", 1)
+            days = config.get("time_period", 1)
             time_range = f"{days}d"
             
         if mean_latency_target is None:
@@ -2262,7 +2369,6 @@ def save_analysis_report(
         reports_dir = os.path.join(os.path.dirname(__file__), "../../reports")
         os.makedirs(reports_dir, exist_ok=True)
         
-        # Add timestamp to filename
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         base_name = filename.replace(".md", "")
         timestamped_filename = f"{base_name}_{timestamp}.md"
@@ -2289,10 +2395,17 @@ def save_analysis_report(
 
 
 def get_analysis_config() -> str:
-    """Reads the analysis configuration from autonomous_analysis_90d.json.
+    """Reads the analysis configuration from config files (.json).
+    
+    This tool reads configuration parameters like time_period_days, KPIs, agent_name,
+    num_slowest_queries, and analysis_scope from the config file.
+    
+    NOTE: As of the refactoring, workflow logic has been moved to the system prompt.
+    The agent should read the config and use analysis_scope to determine which workflow
+    to follow (standard, autonomous, or deep_research).
     
     Returns:
-        JSON string containing the configuration (time period, KPIs, agent filter, etc.).
+        JSON string containing the configuration (time period, KPIs, agent filter, analysis_scope, etc.).
     """
     try:
         # Assuming the config file is in the parent directory of agents/latency_analyzer

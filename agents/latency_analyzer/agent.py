@@ -34,7 +34,8 @@ from .utils import (
     # New KPI and Queuing tools
     analyze_request_queuing,
     check_kpi_compliance,
-    get_analysis_config  # Tool to read config
+    get_analysis_config,  # Tool to read config
+    parse_time_range  # Tool to parse date strings
 )
 
 __dir__ = os.path.dirname(__file__)
@@ -80,7 +81,8 @@ latency_analyzer = LlmAgent(
         # KPI & Queuing
         analyze_request_queuing, # Detect micro-bursts and queuing
         check_kpi_compliance,     # Check against performance targets
-        get_analysis_config      # Read analysis configuration
+        get_analysis_config,      # Read analysis configuration
+        parse_time_range       # Parse date strings
     ],
     generate_content_config=types.GenerateContentConfig(
         temperature=0,
