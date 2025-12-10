@@ -19,7 +19,7 @@ DATASET = os.getenv('DATASET', 'gemini_logs')
 GEMINI_LOG_TABLE = os.getenv('GEMINI_LOG_TABLE', 'gemini_logs')
 
 # Agent version for tracking
-AGENT_VERSION = "1.1.0"  # Added KPI compliance and request queuing analysis
+AGENT_VERSION = "1.2.0"  # Added KPI compliance and request queuing analysis
 
 # Custom JSON encoder to handle Decimal and datetime types
 class AnalysisEncoder(json.JSONEncoder):
