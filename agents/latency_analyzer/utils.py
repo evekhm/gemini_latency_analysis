@@ -634,7 +634,16 @@ def get_agent_comparison(
           APPROX_QUANTILES(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000, 100)[OFFSET(95)] AS p95_latency,
           AVG(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64)) AS avg_input_tokens,
           AVG(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64)) AS avg_output_tokens,
-          SUM(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64)) AS total_tokens
+          AVG(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.thoughtsTokenCount) AS INT64)) AS avg_thought_tokens,
+          AVG(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64)) AS avg_total_tokens,
+          SUM(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64)) AS total_tokens,
+          AVG(
+             CASE 
+                WHEN SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) > 0 
+                THEN (CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) / SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64)
+                ELSE 0 
+             END
+          ) AS avg_tpot
         FROM
           `{PROJECT_ID}.{DATASET}.{GEMINI_LOG_TABLE}` AS T
         WHERE
@@ -655,6 +664,18 @@ def get_agent_comparison(
             if pd.notna(row['avg_input_tokens']) and row['avg_input_tokens'] > 0:
                 efficiency = float(row['avg_latency']) / (float(row['avg_input_tokens']) / 1000)
             
+            # Use explicit thought tokens if available, otherwise estimate
+            avg_brain_tokens = 0
+            if pd.notna(row['avg_thought_tokens']):
+                 avg_brain_tokens = row['avg_thought_tokens']
+            elif pd.notna(row['avg_total_tokens']) and pd.notna(row['avg_input_tokens']) and pd.notna(row['avg_output_tokens']):
+                 avg_brain_tokens = max(0, row['avg_total_tokens'] - row['avg_input_tokens'] - row['avg_output_tokens'])
+            
+            # Thought ratio
+            thought_ratio = 0
+            if pd.notna(row['avg_output_tokens']) and row['avg_output_tokens'] > 0:
+                thought_ratio = avg_brain_tokens / row['avg_output_tokens']
+            
             agents.append({
                 "agent_name": row['agent_name'],
                 "total_calls": int(row['total_calls']),
@@ -662,6 +683,9 @@ def get_agent_comparison(
                 "p95_latency": float(row['p95_latency']) if pd.notna(row['p95_latency']) else None,
                 "avg_input_tokens": float(row['avg_input_tokens']) if pd.notna(row['avg_input_tokens']) else None,
                 "avg_output_tokens": float(row['avg_output_tokens']) if pd.notna(row['avg_output_tokens']) else None,
+                "avg_thought_tokens": float(avg_brain_tokens),
+                "thought_output_ratio": float(thought_ratio),
+                "avg_tpot": float(row['avg_tpot']) if pd.notna(row['avg_tpot']) else None,
                 "total_tokens": int(row['total_tokens']) if pd.notna(row['total_tokens']) else None,
                 "efficiency_score": efficiency
             })
@@ -1501,7 +1525,14 @@ def cluster_slow_queries(
         def get_token_cluster(row):
             input_t = row['input_tokens'] or 0
             output_t = row['output_thought_tokens'] or 0
+            total_t = row['total_tokens'] or (input_t + output_t)
+            latency = row['latency']
             
+            # NEW: Detect "Anomalous Inefficiency"
+            # Normal token count (<500) but unexpectedly high latency (>10s)
+            if total_t < 500 and latency > 10:
+                return "anomalous_inefficiency"
+                
             if input_t > 10000:
                 return "massive_input_10k+"
             elif output_t > 5000:
@@ -2302,7 +2333,7 @@ def check_kpi_compliance(
         if agent_name is None:
             agent_name = config.get("agent_name")
 
-        # Reuse get_overall_statistics to get current metrics
+        # Reuse get_overall_statistics to get current global metrics
         stats_json = get_overall_statistics(time_range=time_range, agent_name=agent_name)
         stats = json.loads(stats_json)
         
@@ -2312,6 +2343,7 @@ def check_kpi_compliance(
         current_mean = stats['latency']['mean']
         current_p95 = stats['latency']['p95']
         
+        # Global Compliance
         compliance = {
             "mean_latency": {
                 "target": mean_latency_target,
@@ -2327,6 +2359,28 @@ def check_kpi_compliance(
             },
             "overall_status": "PASS" if (current_mean <= mean_latency_target and current_p95 <= p95_latency_target) else "FAIL"
         }
+
+        # Per-Agent Compliance (if no specific agent filter is applied)
+        per_agent_compliance = []
+        if agent_name is None:
+            # Use get_agent_comparison to get per-agent stats
+            agent_stats_json = get_agent_comparison(time_range=time_range)
+            agent_stats = json.loads(agent_stats_json)
+            
+            if "agents" in agent_stats:
+                for agent in agent_stats["agents"]:
+                    a_name = agent["agent_name"]
+                    a_mean = agent["avg_latency"]
+                    a_p95 = agent["p95_latency"] if agent["p95_latency"] is not None else 0.0
+                    
+                    per_agent_compliance.append({
+                        "agent_name": a_name,
+                        "mean_latency": a_mean,
+                        "p95_latency": a_p95,
+                        "status": "PASS" if (a_mean <= mean_latency_target and a_p95 <= p95_latency_target) else "FAIL",
+                        "mean_status": "PASS" if a_mean <= mean_latency_target else "FAIL",
+                        "p95_status": "PASS" if a_p95 <= p95_latency_target else "FAIL"
+                    })
         
         result = {
             "metadata": {
@@ -2334,6 +2388,7 @@ def check_kpi_compliance(
                 "agent_name": agent_name
             },
             "compliance": compliance,
+            "per_agent_compliance": per_agent_compliance,
             "summary": f"KPI Status: {compliance['overall_status']}. Mean: {current_mean:.2f}s (Target {mean_latency_target}s), P95: {current_p95:.2f}s (Target {p95_latency_target}s)"
         }
         
@@ -2457,5 +2512,193 @@ def get_analysis_config() -> str:
             return json.dumps(config)
     except Exception as e:
         error_msg = f"Error reading config: {str(e)}"
+        logging.error(error_msg)
+        return json.dumps({"error": error_msg})
+
+def analyze_thinking_overhead(
+    time_range: str = "24h",
+    model_name: Optional[str] = None,
+    agent_name: Optional[str] = None
+) -> str:
+    """Analyze 'thinking' feature overhead by examining thought token patterns.
+    
+    Identifies queries where thinking dominates the response:
+    - High thought/output ratio (>5:1 indicates heavy thinking)
+    - Unexpectedly high thought tokens for simple queries
+    - Correlation between thought tokens and latency
+    
+    Returns:
+        JSON with thinking patterns, ratios, and recommendations
+    """
+    try:
+        time_range_dict = json.loads(parse_time_range(time_range))
+        start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
+        
+        where_clauses = [
+            f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
+            "T.full_request IS NOT NULL",
+            "T.full_response IS NOT NULL",
+            "JSON_VALUE(T.metadata.request_latency) IS NOT NULL"
+        ]
+        
+        if model_name:
+            where_clauses.append(f"T.model LIKE '%{model_name}%'")
+        if agent_name:
+            where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
+        
+        where_clause = " AND ".join(where_clauses)
+        
+        query = f"""
+        SELECT
+          CAST(T.request_id AS STRING) AS request_id,
+          COALESCE(JSON_VALUE(T.full_request.labels.adk_agent_name), 'unknown') AS agent_name,
+          CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000 AS latency,
+          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64) AS input_tokens,
+          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) AS output_tokens,
+          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64) AS total_tokens
+        FROM
+          `{PROJECT_ID}.{DATASET}.{GEMINI_LOG_TABLE}` AS T
+        WHERE
+          {where_clause}
+        ORDER BY latency DESC
+        LIMIT 1000
+        """
+        
+        df = execute_bigquery(query)
+        
+        if df.empty:
+            return json.dumps({"error": "No data found"})
+            
+        # Calculate thought tokens and ratios
+        # Assuming thought tokens are part of total but not explicit in standardized usageMetadata in some versions,
+        # or we can infer them if total > input + output. 
+        # Note: Some models expose distinct thought tokens, others bundle them.
+        # We'll use max(0, total - input - output) as a proxy for overhead/thought if explicit field missing everywhere.
+        # But actually, Gemini 2.0 Flash thinking model has specific fields. 
+        # For now, we'll use the inference method which aligns with our previous tool updates.
+        
+        df['input_tokens'] = pd.to_numeric(df['input_tokens'], errors='coerce').fillna(0)
+        df['output_tokens'] = pd.to_numeric(df['output_tokens'], errors='coerce').fillna(0)
+        df['total_tokens'] = pd.to_numeric(df['total_tokens'], errors='coerce').fillna(0)
+        df['thought_tokens'] = (df['total_tokens'] - df['input_tokens'] - df['output_tokens']).clip(lower=0)
+        df['thought_output_ratio'] = df.apply(
+            lambda row: row['thought_tokens'] / row['output_tokens'] if row['output_tokens'] > 0 else 0, axis=1
+        )
+        
+        # Identify heavy thinking queries
+        heavy_thinking = df[df['thought_output_ratio'] > 5]
+        
+        # Calculate correlations
+        metrics = df[['latency', 'thought_tokens', 'output_tokens', 'thought_output_ratio']].corr()['latency']
+        
+        result = {
+            "metadata": {
+                "time_range": f"{start_time} to {end_time}",
+                "total_analyzed": len(df)
+            },
+            "statistics": {
+                "avg_thought_tokens": float(df['thought_tokens'].mean()),
+                "max_thought_tokens": int(df['thought_tokens'].max()),
+                "avg_thought_output_ratio": float(df['thought_output_ratio'].mean()),
+                "percent_heavy_thinking": float(len(heavy_thinking) / len(df) * 100)
+            },
+            "correlations": {
+                "latency_vs_thought_tokens": float(metrics['thought_tokens']),
+                "latency_vs_ratio": float(metrics['thought_output_ratio'])
+            },
+            "heavy_thinking_samples": heavy_thinking.head(5)[['request_id', 'agent_name', 'latency', 'thought_tokens', 'output_tokens', 'thought_output_ratio']].to_dict('records')
+        }
+        
+        return json.dumps(result, cls=AnalysisEncoder)
+        
+    except Exception as e:
+        error_msg = f"Error in analyze_thinking_overhead: {str(e)}"
+        logging.error(error_msg)
+        return json.dumps({"error": error_msg})
+
+
+def detect_compute_inefficiency(
+    time_range: str = "24h",
+    model_name: Optional[str] = None,
+    agent_name: Optional[str] = None
+) -> str:
+    """Compare actual latency to expected latency to detect compute bottlenecks.
+    
+    Expected latency model:
+    - Prefill: 0.0005s per input token
+    - Decode: 0.05s per output token (baseline 20 t/s)
+    - Fixed overhead: 0.5s
+    
+    Flags queries where Actual > 5x Expected.
+    """
+    try:
+        time_range_dict = json.loads(parse_time_range(time_range))
+        start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
+        
+        where_clauses = [
+            f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
+            "T.full_request IS NOT NULL",
+            "T.full_response IS NOT NULL",
+            "JSON_VALUE(T.metadata.request_latency) IS NOT NULL"
+        ]
+        
+        if model_name:
+            where_clauses.append(f"T.model LIKE '%{model_name}%'")
+        if agent_name:
+            where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
+        
+        where_clause = " AND ".join(where_clauses)
+        
+        query = f"""
+        SELECT
+          CAST(T.request_id AS STRING) AS request_id,
+          COALESCE(JSON_VALUE(T.full_request.labels.adk_agent_name), 'unknown') AS agent_name,
+          CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000 AS latency,
+          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64) AS input_tokens,
+          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) AS output_tokens,
+          -- Preview for context
+          SUBSTR(TO_JSON_STRING(T.full_request), 1, 100) AS request_preview
+        FROM
+          `{PROJECT_ID}.{DATASET}.{GEMINI_LOG_TABLE}` AS T
+        WHERE
+          {where_clause}
+        ORDER BY latency DESC
+        LIMIT 1000
+        """
+        
+        df = execute_bigquery(query)
+        
+        if df.empty:
+            return json.dumps({"error": "No data found"})
+            
+        # Calculate expected latency
+        # Model: 0.5s overhead + 0.5ms/input + 50ms/output
+        df['expected_latency'] = 0.5 + (df['input_tokens'] * 0.0005) + (df['output_tokens'] * 0.05)
+        
+        # Calculate inefficiency ratio
+        df['inefficiency_ratio'] = df['latency'] / df['expected_latency']
+        
+        # Flag inefficient queries (Actual > 5x Expected)
+        inefficient_queries = df[df['inefficiency_ratio'] > 5.0].copy()
+        inefficient_queries.sort_values('inefficiency_ratio', ascending=False, inplace=True)
+        
+        result = {
+            "metadata": {
+                "time_range": f"{start_time} to {end_time}",
+                "total_analyzed": len(df),
+                "inefficiency_threshold": "5x expected"
+            },
+            "summary": {
+                "inefficient_count": len(inefficient_queries),
+                "inefficient_percentage": float(len(inefficient_queries) / len(df) * 100),
+                "avg_inefficiency_ratio": float(inefficient_queries['inefficiency_ratio'].mean()) if not inefficient_queries.empty else 0
+            },
+            "top_inefficient_queries": inefficient_queries.head(10)[['request_id', 'agent_name', 'latency', 'expected_latency', 'inefficiency_ratio']].to_dict('records')
+        }
+        
+        return json.dumps(result, cls=AnalysisEncoder)
+        
+    except Exception as e:
+        error_msg = f"Error in detect_compute_inefficiency: {str(e)}"
         logging.error(error_msg)
         return json.dumps({"error": error_msg})

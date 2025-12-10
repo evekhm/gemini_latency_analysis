@@ -1,7 +1,7 @@
 {
     "state": {},
     "config": {
-        "time_period_days": "90d",
+        "time_period_days": "100d",
         "analysis_scope": "autonomous",
         "kpis": {
             "mean_latency_target": 3.0,
@@ -11,6 +11,6 @@
         "agent_name": null
     },
     "queries": [
-        "Perform autonomous latency analysis for the configured time period."
+        "Perform autonomous latency analysis with automatic deep research triggers for the configured time period."
     ]
 }

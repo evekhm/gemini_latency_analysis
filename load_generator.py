@@ -24,9 +24,11 @@ logging.basicConfig(
 # Load environment variables
 load_dotenv()
 
-PROJECT_ID = os.getenv("PROJECT_ID", "llm-latency-ek") 
+PROJECT_ID = os.getenv("PROJECT_ID")
 LOCATION = os.getenv("LOCATION", "us-central1")
 MODEL_ID = os.getenv("MODEL")
+
+assert PROJECT_ID, "PROJECT_ID is not set"
 
 # ADK/GenAI SDK often looks for GOOGLE_CLOUD_PROJECT
 if "GOOGLE_CLOUD_PROJECT" not in os.environ:
@@ -220,7 +222,7 @@ async def run_scenario(name: str, config: dict, override_count: int = None, agen
 async def send_hello_world(agent_name: str = "load_generator"):
     """Runs a simple Hello World check."""
     logging.info(f"--- Running Default: Hello World Check (Agent: {agent_name}) ---")
-    latency, text = await send_request(agent_name, "Hello World", 100, "HelloWorld", streaming=False)
+    latency, text = await send_request(agent_name, "Hello World", 1000, "HelloWorld", streaming=False)
     if text:
         print(f"\nModel Answer: {text}\n")
 

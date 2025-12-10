@@ -9,24 +9,78 @@
             "streaming": false,
             "agent_name": "load_gen_baseline"
         },
-        "high_input": {
-            "description": "High input token count (approx 10,000) to test processing latency.",
-            "prompt_type": "generated",
-            "prompt_length": 10000,
+        "thinking_heavy": {
+            "description": "Test thinking/reasoning overhead with complex reasoning prompts",
+            "prompt": "Solve this step by step: If a train leaves station A at 60mph and another leaves station B at 80mph, 200 miles apart, when do they meet? Show your reasoning.",
+            "max_output_tokens": 10000,
+            "count": 50,
+            "concurrency": 5,
+            "streaming": false,
+            "agent_name": "load_gen_thinking_test"
+        },
+        "simple_slow": {
+            "description": "Very simple prompts that should be fast - detect anomalies",
+            "prompt": "What is 2+2?",
             "max_output_tokens": 2048,
             "count": 100,
-            "concurrency": 5,
+            "concurrency": 10,
             "streaming": false,
-            "agent_name": "load_gen_high_input"
+            "agent_name": "load_gen_simple_fast"
         },
-        "high_output": {
-            "description": "High output token count (approx 1000 words) to test generation latency.",
-            "prompt": "Write a long, detailed essay about the history of the internet. Write at least 1000 words.",
-            "max_output_tokens": 8192,
-            "count": 100,
+        "high_input_realistic": {
+            "description": "High input token count with realistic text (e.g., document excerpt).",
+            "prompt": "Summarize the following text: [Insert a ~10000 token text block here - e.g., a few book chapters or a long article]",
+            "max_output_tokens": 500,
+            "count": 50,
+            "concurrency": 3,
+            "streaming": false,
+            "agent_name": "load_gen_high_input_doc"
+        },
+        "large_input_jump": {
+            "description": "Test prefill latency with very large context (>30K tokens)",
+            "prompt_type": "generated",
+            "prompt_length": 35000,
+            "max_output_tokens": 10000,
+            "count": 30,
+            "concurrency": 3,
+            "streaming": false,
+            "agent_name": "load_gen_prefill_test"
+        },
+        "high_output_essay": {
+            "description": "High output token count (approx 1000 words) - Essay",
+            "prompt": "Write a long, detailed essay about the history of artificial intelligence. Write at least 1000 words.",
+            "max_output_tokens": 50000,
+            "count": 20,
+            "concurrency": 2,
+            "streaming": false,
+            "agent_name": "load_gen_high_output_essay"
+        },
+        "high_output_code": {
+            "description": "High output token count - Code Generation",
+            "prompt": "Generate a Python script that implements a web scraper for a news website. Include error handling and data storage.",
+            "max_output_tokens": 50000,
+            "count": 20,
+            "concurrency": 2,
+            "streaming": false,
+            "agent_name": "load_gen_high_output_code"
+        },
+        "moderate_output": {
+            "description": "Moderate output token count (~500 words)",
+            "prompt": "Explain the concept of neural networks in about 500 words.",
+            "max_output_tokens": 2048,
+            "count": 50,
             "concurrency": 5,
             "streaming": false,
-            "agent_name": "load_gen_high_output"
+            "agent_name": "load_gen_moderate_output"
+        },
+        "tpot_baseline": {
+            "description": "Generate exactly 100 tokens to calculate baseline TPOT",
+            "prompt": "Generate exactly 100 words about technology.",
+            "max_output_tokens": 2048,
+            "count": 50,
+            "concurrency": 5,
+            "streaming": false,
+            "agent_name": "load_gen_tpot_baseline"
         },
         "concurrency": {
             "description": "High concurrency to test system queuing and throughput.",
@@ -36,6 +90,26 @@
             "concurrency": 50,
             "streaming": false,
             "agent_name": "load_gen_concurrency"
+        },
+        "tool_use_scenario": {
+            "description": "Scenario involving a tool call to test tool execution latency.",
+            "prompt": "What is the current weather in London?",
+            "max_output_tokens": 2048,
+            "count": 20,
+            "concurrency": 2,
+            "streaming": false,
+            "agent_name": "load_gen_tool_use",
+            "expect_tool_call": true
+        },
+        "thinking_scenario": {
+            "description": "Scenario likely to trigger the 'thinking' feature.",
+            "prompt": "Plan a 3-day trip to Paris, including must-see attractions, food recommendations, and budget considerations. Provide a day-by-day itinerary.",
+            "max_output_tokens": 10000,
+            "count": 20,
+            "concurrency": 2,
+            "streaming": false,
+            "agent_name": "load_gen_thinking",
+            "enable_thinking": true
         },
         "direct_baseline": {
             "description": "Direct client baseline requests.",

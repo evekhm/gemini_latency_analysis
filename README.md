@@ -4,12 +4,14 @@
   * [Prerequisites](#prerequisites)
     * [Enable Gemini Requests Logging](#enable-gemini-requests-logging)
     * [Install Libraries](#install-libraries)
-  * [Latency Analyzer Agent (Recommended Approach)](#latency-analyzer-agent-recommended-approach)
+  * [Quick start](#quick-start)
+  * [Load Generator](#load-generator)
     * [Features](#features)
-    * [Analysis Tools](#analysis-tools)
     * [Usage](#usage)
-    * [Deep Research Mode](#deep-research-mode)
-    * [How It Works](#how-it-works)
+  * [Latency Analyzer Agent](#latency-analyzer-agent)
+    * [Features](#features-1)
+    * [Analysis Tools](#analysis-tools)
+    * [Usage](#usage-1)
   * [Visualization and Charts (Alternative Approach)](#visualization-and-charts-alternative-approach)
     * [Generate Analysis Charts](#generate-analysis-charts)
     * [Generated Charts and Visualizations](#generated-charts-and-visualizations)
@@ -73,14 +75,20 @@ Load environment variables:
 source .env
 ```
 
+Set active project:
+```shell
+gcloud config set project ${PROJECT_ID}
+```
+
+Authenticate::
+```shell
+gcloud auth login
+gcloud auth application-default login
+```
+
 Enabled required APIs:
 ```shell
 gcloud services enable aiplatform.googleapis.com --project="${PROJECT_ID}"
-```
-
-**Create dataset (if it does not exist yet)**
-```shell
-bq --location="$GOOGLE_CLOUD_LOCATION" mk --dataset --description "Dataset for LLM logging" --project_id=$PROJECT_ID ${DATASET} || echo "Dataset DATASET already exists."
 ```
 
 **Create `request.json` file**
@@ -110,6 +118,13 @@ curl -X POST \
 "https://$REGION-aiplatform.googleapis.com/v1beta1/projects/$PROJECT_ID/locations/$REGION/publishers/google/models/$MODEL:setPublisherModelConfig"
 ```
 
+Test applied configuration:
+
+```shell
+curl -X GET \
+-H "Authorization: Bearer $(gcloud auth print-access-token)" \
+"https://$REGION-aiplatform.googleapis.com/v1beta1/projects/$PROJECT_ID/locations/$REGION/publishers/google/models/$MODEL:fetchPublisherModelConfig"
+```
 
 ### Install Libraries
 
@@ -132,6 +147,21 @@ gcloud auth login
 
 ---
 
+## Quick start
+
+Run load generator:
+```shell
+python load_generator.py all
+```
+
+Generate Summary report of the LLM performance:
+```shell
+./run_autonomous_analysis.sh
+```
+
+Check BigQuery table for the logged llm calls
+Check generated .md report inside reports directory
+
 ## Load Generator
 
 A tool to generate synthetic load for latency analysis, now powered by ADK agents for better tracking.
@@ -142,11 +172,13 @@ A tool to generate synthetic load for latency analysis, now powered by ADK agent
 - **Configurable Scenarios**: Define scenarios in `load_scenarios.json` with specific prompts, token counts, and concurrency.
 - **Latency Tracking**: Logs Time-to-First-Token (TTFT) and End-to-End (E2E) latency.
 
+Uses configurations setup in `load_scenarios.json` file.
+
 ### Usage
 
-**Run a specific scenario:**
+**Run All scenarios:**
 ```shell
-python3 load_generator.py baseline
+python load_generator.py all
 ```
 
 **Run with direct client (bypass agent):**
@@ -154,24 +186,10 @@ python3 load_generator.py baseline
 python3 load_generator.py direct_baseline
 ```
 
-**List available scenarios:**
-```shell
-python3 load_generator.py --list
-```
-
-**Configuration (`load_scenarios.json`):**
-```json
-"baseline": {
-    "description": "Fast baseline requests",
-    "prompt": "Say 'Hi'",
-    "agent_name": "load_gen_baseline"  // Unique name for analysis filtering
-}
-```
-
 ---
 
 
-## Latency Analyzer Agent (Recommended Approach)
+## Latency Analyzer Agent
 
 The `latency_analyzer` agent is a comprehensive AI-powered tool that automates latency analysis. It combines statistical analysis, pattern detection, and individual query investigation into a single unified agent.
 
@@ -221,11 +239,13 @@ The `latency_analyzer` agent is a comprehensive AI-powered tool that automates l
 
 **Quick Start - Autonomous Analysis (Recommended):**
 
-The best way to use the agent is with **autonomous mode**, where the system prompt contains the workflow logic and the config file provides parameters:
+The **autonomous analysis** automatically includes deep research triggers. When critical issues are detected (KPI failures, strong correlations, dominant clusters), the agent automatically performs deeper investigation:
 
 ```shell
 ./run_autonomous_analysis.sh
 ```
+
+This workflow adapts its depth based on what it finds, ensuring the most thorough analysis without manual intervention.
 
 **Configuration Format:**
 
@@ -260,8 +280,15 @@ The agent uses JSON config files with two key sections:
   
 - **`analysis_scope`**: Determines the workflow depth
   - `"standard"`: Quick health check (KPI compliance, basic correlation, patterns)
-  - `"autonomous"`: Comprehensive analysis with hypothesis testing (recommended)
-  - `"deep_research"`: Exhaustive research with detailed evidence and follow-up questions
+  - `"autonomous"`: **Comprehensive analysis with automatic deep research triggers** (recommended)
+    - Automatically activates deep research when:
+      - KPIs fail (mean or P95 above targets)
+      - Strong correlations detected (r > 0.7)
+      - Dominant clusters found (>30% of slow queries)
+      - High variance outliers (std/mean > 0.5)
+      - Significant performance degradation (>20%)
+      - Request queuing detected (burst correlation > 0.6)
+  - `"deep_research"`: Forces deep research mode for all hypotheses (use for manual control)
   
 - **`kpis`**: Target latency values
   - `mean_latency_target`: Target for mean latency in seconds (e.g., 3.0)
@@ -270,16 +297,6 @@ The agent uses JSON config files with two key sections:
 - **`agent_name`**: Filter for a specific agent (e.g., "my_agent") or `null` for all agents
 
 - **`num_slowest_queries`**: Number of slow queries to analyze in detail (e.g., 20)
-
-**Pre-configured Examples:**
-
-| Config File | Scope | Time Range | Use Case |
-|-------------|-------|-----------|----------|
-| `autonomous_analysis_90d.json` | autonomous | 90d | Comprehensive 90-day audit |
-| `comprehensive_analysis_90d.json` | deep_research | 90d | Exhaustive research with hypothesis testing |
-| `daily_kpi_check.json` | standard | 24h | Quick daily health check |
-| `deep_agent_analysis.json` | deep_research | 7d | In-depth single agent investigation |
-| `cost_analysis.json` | autonomous | 30d | Cost-focused optimization |
 
 **How It Works:**
 
@@ -290,7 +307,9 @@ The workflow logic is now in the system prompt (`agents/latency_analyzer/prompts
 4. Generates a comprehensive report
 5. Saves the report to `reports/` directory with timestamp
 
-The agent will create a file like: `reports/autonomous_latency_analysis_report_20251201_162530.md`
+**Report Files:**
+- Autonomous analysis (adaptive depth): `reports/autonomous_latency_analysis_report_YYYYMMDD_HHMMSS.md`
+- Deep research (forced): `reports/deep_latency_research_report_YYYYMMDD_HHMMSS.md`
 
 Alternatively, run it manually:
 
@@ -305,15 +324,6 @@ The agent generates comprehensive markdown reports in the `reports/` directory:
 - **Format:** `reports/latency_analysis_report_<timestamp>.md`
 - **Content:** Executive summary, hypothesis testing results, key findings, root causes, and prioritized recommendations.
 
-**Alternative: Step-by-Step Analysis:**
-
-If you prefer to see each analysis step separately, use the step-by-step replay:
-
-```shell
-./run_comprehensive_analysis.sh
-```
-
-This uses `comprehensive_analysis_90d.json` with 10 specific queries demonstrating each tool category.
 
 **Interactive Mode:**
 
@@ -331,73 +341,6 @@ Then ask questions like:
 - "Has performance degraded over the last week?"
 - "Fetch the 10 slowest queries and analyze each one in detail"
 
-**Custom Replay Mode:**
-
-Create a JSON file with your queries:
-
-```json
-{
-  "state": {},
-  "queries": [
-    "Analyze latency for the last 7 days",
-    "Deep analysis of latency patterns",
-    "Fetch the slowest queries and analyze them individually"
-  ]
-}
-```
-
-Then run:
-```shell
-cd agents
-adk run --replay ../your_queries.json latency_analyzer
-```
-
-### Deep Research Mode
-
-The agent supports **hypothesis-driven research analysis** for thorough investigation:
-
-**Trigger with phrases like:**
-- "Deep analysis of latency patterns"
-- "Research all possible causes"
-- "Test hypotheses about performance"
-- "Find all interesting patterns"
-
-**Research Process:**
-1. **Hypothesis Generation** - Agent generates multiple hypotheses to test
-2. **Systematic Testing** - Tests each hypothesis with appropriate tools
-3. **Findings Synthesis** - Summarizes accepted/rejected/inconclusive hypotheses
-4. **Follow-Up Questions** - Suggests specific next steps based on findings
-
-**Example Research Hypotheses:**
-- H1: Output+thought tokens drive latency
-- H2: Specific agents have systematic issues
-- H3: Time-based patterns exist
-- H4: Slow queries cluster into distinct groups
-- H5: Outliers share common characteristics
-- H6: Individual slow queries reveal specific bottlenecks
-
-**Key Research Tools:**
-- `analyze_correlation_detailed()` - Tests token correlation hypotheses with statistical rigor
-- `cluster_slow_queries()` - Identifies patterns and groups similar queries
-- `fetch_slow_queries()` + `fetch_single_query()` - Deep-dive into individual query content
-
-The agent will provide:
-- Statistical evidence for each hypothesis
-- Clustering breakdown with similarities
-- Correlation analysis (including output+thought tokens)
-- Individual query analysis with root causes
-- Specific follow-up questions for deeper investigation
-
-### How It Works
-
-Instead of generating charts, the agent:
-1. Queries BigQuery for structured data (statistics, correlations, distributions)
-2. Analyzes the data using LLM reasoning
-3. Identifies patterns and bottlenecks
-4. Fetches individual slow queries when needed for deep analysis
-5. Provides specific, actionable recommendations
-
-This approach is more precise than visual chart interpretation and enables automated analysis.
 
 ---
 
