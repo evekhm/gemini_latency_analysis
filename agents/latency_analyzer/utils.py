@@ -15,14 +15,37 @@ from dotenv import load_dotenv
 load_dotenv()
 
 PROJECT_ID = os.getenv('PROJECT_ID')
-DATASET = os.getenv('DATASET', 'gemini_logs')
-GEMINI_LOG_TABLE = os.getenv('GEMINI_LOG_TABLE', 'gemini_logs')
+DATASET_ID = os.getenv('DATASET_ID')
+TABLE_ID = os.getenv('AGENT_TABLE_ID') or 'gemini_logs'
+
+assert PROJECT_ID, "PROJECT_ID environment variable not set"
+assert DATASET_ID, "DATASET_ID environment variable not set"
+# TABLE_ID now defaults to 'gemini_logs' -> assertion removed
 
 # Agent version for tracking
-AGENT_VERSION = "1.2.0"  # Added KPI compliance and request queuing analysis
+AGENT_VERSION = "1.2.0"
+
+print(f"Agent version: {AGENT_VERSION}, TABLE_ID: {TABLE_ID}, PROJECT_ID: {PROJECT_ID}, DATASET_ID: {DATASET_ID}")
+
+def get_table_list() -> List[str]:
+    """
+    Parse TABLE_ID environment variable as comma-separated list.
+    
+    Returns:
+        List of table names with whitespace stripped
+    """
+    tables = [table.strip() for table in TABLE_ID.split(',')]
+    return [t for t in tables if t]  # Filter out empty strings
+
+
+
+
+
+
 
 # Custom JSON encoder to handle Decimal and datetime types
 class AnalysisEncoder(json.JSONEncoder):
+
     def default(self, obj):
         if isinstance(obj, Decimal):
             return float(obj)
@@ -171,10 +194,12 @@ def get_analysis_metadata() -> str:
     """
     from datetime import datetime
     
+    tables = get_table_list()
     metadata = {
         "project_id": PROJECT_ID,
-        "dataset": DATASET,
-        "table": GEMINI_LOG_TABLE,
+        "dataset": DATASET_ID,
+        "tables": tables,  # Now returns list of tables
+        "table_count": len(tables),
         "analyzer_version": AGENT_VERSION,
         "generated_timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
@@ -187,48 +212,69 @@ def verify_data_access() -> str:
     Verifies BigQuery configuration and data access.
     
     Use this tool when you encounter "No data found" errors to check:
-    1. If the configuration (Project, Dataset, Table) is correct
+    1. If the configuration (Project, Dataset, Tables) is correct
     2. If the agent has permissions to access the table
     3. If the table actually contains data
     
     Returns:
         JSON string with configuration details and test query result
     """
+    tables = get_table_list()
     config = {
         "project_id": PROJECT_ID,
-        "dataset": DATASET,
-        "table": GEMINI_LOG_TABLE,
+        "dataset": DATASET_ID,
+        "tables": tables,
+        "table_count": len(tables),
         "env_vars_loaded": {
             "PROJECT_ID": bool(PROJECT_ID),
-            "DATASET": bool(DATASET),
-            "GEMINI_LOG_TABLE": bool(GEMINI_LOG_TABLE)
+            "DATASET_ID": bool(DATASET_ID),
+            "TABLE_ID": bool(TABLE_ID)
         }
     }
     
     # Log configuration for visibility
-    logging.info(f"[CONFIG] Verifying access with: Project={PROJECT_ID}, Dataset={DATASET}, Table={GEMINI_LOG_TABLE}")
+    logging.info(f"[CONFIG] Verifying access with: Project={PROJECT_ID}, Dataset={DATASET_ID}, Tables={tables}")
     
     try:
-        # Test query to check access and get total count
-        query = f"""
-        SELECT 
-            COUNT(*) as total_rows,
-            MIN(logging_time) as first_log,
-            MAX(logging_time) as last_log
-        FROM `{PROJECT_ID}.{DATASET}.{GEMINI_LOG_TABLE}`
-        """
+        # Build query for all tables using UNION ALL
+        table_queries = []
+        for table in tables:
+            table_query = f"""
+            SELECT 
+                '{table}' as table_name,
+                COUNT(*) as total_rows,
+                MIN(logging_time) as first_log,
+                MAX(logging_time) as last_log
+            FROM `{PROJECT_ID}.{DATASET_ID}.{table}`
+            """
+            table_queries.append(table_query)
+        
+        query = "\nUNION ALL\n".join(table_queries)
         
         df = execute_bigquery(query, timeout=30)
         
         if not df.empty:
-            row = df.iloc[0]
+            # Aggregate results across all tables
+            total_rows = df['total_rows'].sum()
+            first_log = df['first_log'].min()
+            last_log = df['last_log'].max()
+            
             result = {
                 "status": "SUCCESS",
-                "message": "Successfully connected to BigQuery table",
-                "total_rows": int(row['total_rows']),
+                "message": f"Successfully connected to {len(tables)} BigQuery table(s)",
+                "total_rows": int(total_rows),
+                "tables_detail": [
+                    {
+                        "table": row['table_name'],
+                        "rows": int(row['total_rows']),
+                        "first_log": row['first_log'].isoformat() if pd.notna(row['first_log']) else None,
+                        "last_log": row['last_log'].isoformat() if pd.notna(row['last_log']) else None
+                    }
+                    for _, row in df.iterrows()
+                ],
                 "data_range": {
-                    "start": row['first_log'].isoformat() if pd.notna(row['first_log']) else None,
-                    "end": row['last_log'].isoformat() if pd.notna(row['last_log']) else None
+                    "start": first_log.isoformat() if pd.notna(first_log) else None,
+                    "end": last_log.isoformat() if pd.notna(last_log) else None
                 },
                 "configuration": config
             }
@@ -282,6 +328,42 @@ def execute_bigquery(query: str, timeout: int = 1200):
         raise
 
 
+def build_multi_table_source(where_clause: str, select_suffix: str = "") -> str:
+    """
+    Build a FROM clause that handles single or multiple tables.
+    
+    For single table: Returns simple FROM clause
+    For multiple tables: Returns UNION ALL of all tables with optional alias
+    
+    Args:
+        where_clause: WHERE conditions to apply (without WHERE keyword)
+        select_suffix: Optional suffix to add after main table reference (e.g., "AS T")
+        
+    Returns:
+        SQL fragment for FROM clause or UNION ALL subquery
+        
+    Example:
+        Single table: `project.dataset.table` AS T
+        Multiple tables: 
+            (SELECT * FROM `project.dataset.table1` AS T WHERE ... 
+             UNION ALL 
+             SELECT * FROM `project.dataset.table2` AS T WHERE ...)
+    """
+    tables = get_table_list()
+    
+    if len(tables) == 1:
+        # Single table - simple FROM
+        return f"`{PROJECT_ID}.{DATASET_ID}.{tables[0]}` {select_suffix}"
+    else:
+        # Multiple tables - UNION ALL
+        table_queries = []
+        for table in tables:
+            table_query = f"SELECT * FROM `{PROJECT_ID}.{DATASET_ID}.{table}` {select_suffix} WHERE {where_clause}"
+            table_queries.append(table_query)
+        
+        return f"(\n    {chr(10).join([f'    {q}' if i > 0 else q for i, q in enumerate(table_queries)])}\n    UNION ALL\n  ) AS T"
+
+
 def get_overall_statistics(
     time_range: str = "24h",
     model_name: Optional[str] = None,
@@ -321,7 +403,14 @@ def get_overall_statistics(
         
         where_clause = " AND ".join(where_clauses)
         
-        query = f"""
+        # Build query for multiple tables using UNION ALL
+        tables = get_table_list()
+        
+        if len(tables) == 1:
+            # Single table - direct aggregation
+            tables = get_table_list()
+            
+            query = f"""
         SELECT
           COUNT(*) as total_requests,
           AVG(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) AS mean_latency,
@@ -340,9 +429,51 @@ def get_overall_statistics(
           AVG(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64)) AS mean_total_tokens,
           SUM(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64)) AS total_tokens
         FROM
-          `{PROJECT_ID}.{DATASET}.{GEMINI_LOG_TABLE}` AS T
+          `{PROJECT_ID}.{DATASET_ID}.{tables[0]}` AS T
         WHERE
           {where_clause}
+        """
+        else:
+            # Multiple tables - union raw data then aggregate
+            table_selects = []
+            for table in tables:
+                table_select = f"""
+            SELECT
+              CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000 AS latency,
+              SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64) AS input_tokens,
+              SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) AS output_tokens,
+              SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.thoughtsTokenCount) AS INT64) AS thought_tokens,
+              SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64) AS total_tokens_row
+            FROM
+              `{PROJECT_ID}.{DATASET_ID}.{table}` AS T
+            WHERE
+              {where_clause}
+            """
+                table_selects.append(table_select)
+            
+            union_data = "\nUNION ALL\n".join(table_selects)
+            
+            query = f"""
+        SELECT
+          COUNT(*) as total_requests,
+          AVG(latency) AS mean_latency,
+          APPROX_QUANTILES(latency, 100)[OFFSET(50)] AS median_latency,
+          APPROX_QUANTILES(latency, 100)[OFFSET(75)] AS p75_latency,
+          APPROX_QUANTILES(latency, 100)[OFFSET(90)] AS p90_latency,
+          APPROX_QUANTILES(latency, 100)[OFFSET(95)] AS p95_latency,
+          APPROX_QUANTILES(latency, 100)[OFFSET(99)] AS p99_latency,
+          APPROX_QUANTILES(latency, 1000)[OFFSET(999)] AS p999_latency,
+          MIN(latency) AS min_latency,
+          MAX(latency) AS max_latency,
+          STDDEV(latency) AS std_latency,
+          AVG(input_tokens) AS mean_input_tokens,
+          AVG(output_tokens) AS mean_output_tokens,
+          AVG(thought_tokens) AS mean_thought_tokens,
+          AVG(total_tokens_row) AS mean_total_tokens,
+          SUM(total_tokens_row) AS total_tokens
+        FROM (
+{union_data}
+        )
         """
         
         df = execute_bigquery(query)
@@ -423,14 +554,64 @@ def get_latency_distribution(
         
         where_clause = " AND ".join(where_clauses)
         
-        query = f"""
+        # Build table source (handles single or multiple tables)
+        tables = get_table_list()
+        
+        if len(tables) == 1:
+            # Single table - use CTE approach
+            tables = get_table_list()
+            
+            query = f"""
         WITH latency_data AS (
           SELECT
             CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000 AS latency_seconds
           FROM
-            `{PROJECT_ID}.{DATASET}.{GEMINI_LOG_TABLE}` AS T
+            `{PROJECT_ID}.{DATASET_ID}.{tables[0]}` AS T
           WHERE
             {where_clause}
+        )
+        SELECT
+          CASE
+            WHEN latency_seconds < 1.0 THEN 'Fast (<1s)'
+            WHEN latency_seconds < 2.0 THEN 'Medium (1-2s)'
+            WHEN latency_seconds < 3.0 THEN 'Slow (2-3s)'
+            WHEN latency_seconds < 5.0 THEN 'Very Slow (3-5s)'
+            ELSE 'Outliers (5s+)'
+          END AS category,
+          COUNT(*) as count,
+          AVG(latency_seconds) as avg_latency,
+          MIN(latency_seconds) as min_latency,
+          MAX(latency_seconds) as max_latency
+        FROM latency_data
+        GROUP BY category
+        ORDER BY 
+          CASE category
+            WHEN 'Fast (<1s)' THEN 1
+            WHEN 'Medium (1-2s)' THEN 2
+            WHEN 'Slow (2-3s)' THEN 3
+            WHEN 'Very Slow (3-5s)' THEN 4
+            WHEN 'Outliers (5s+)' THEN 5
+          END
+        """
+        else:
+            # Multiple tables - UNION ALL then aggregate
+            table_selects = []
+            for table in tables:
+                table_select = f"""
+          SELECT
+            CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000 AS latency_seconds
+          FROM
+            `{PROJECT_ID}.{DATASET_ID}.{table}` AS T
+          WHERE
+            {where_clause}
+        """
+                table_selects.append(table_select)
+            
+            union_data = "\nUNION ALL\n".join(table_selects)
+            
+            query = f"""
+        WITH latency_data AS (
+{union_data}
         )
         SELECT
           CASE
@@ -521,7 +702,11 @@ def get_hourly_patterns(
         
         where_clause = " AND ".join(where_clauses)
         
-        query = f"""
+        # Build query for multiple tables using UNION ALL
+        tables = get_table_list()
+        
+        if len(tables) == 1:
+            query = f"""
         SELECT
           EXTRACT(HOUR FROM T.logging_time) AS hour,
           EXTRACT(DAYOFWEEK FROM T.logging_time) AS day_of_week,
@@ -531,9 +716,43 @@ def get_hourly_patterns(
           MIN(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) AS min_latency,
           MAX(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) AS max_latency
         FROM
-          `{PROJECT_ID}.{DATASET}.{GEMINI_LOG_TABLE}` AS T
+          `{PROJECT_ID}.{DATASET_ID}.{tables[0]}` AS T
         WHERE
           {where_clause}
+        GROUP BY hour, day_of_week, day_type
+        ORDER BY hour
+        """
+        else:
+            # Multiple tables - union raw data then aggregate
+            table_selects = []
+            for table in tables:
+                table_select = f"""
+        SELECT
+          EXTRACT(HOUR FROM T.logging_time) AS hour,
+          EXTRACT(DAYOFWEEK FROM T.logging_time) AS day_of_week,
+          CASE WHEN EXTRACT(DAYOFWEEK FROM T.logging_time) IN (1, 7) THEN 'weekend' ELSE 'working' END AS day_type,
+          CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000 AS latency
+        FROM
+          `{PROJECT_ID}.{DATASET_ID}.{table}` AS T
+        WHERE
+          {where_clause}
+        """
+                table_selects.append(table_select)
+            
+            union_data = "\nUNION ALL\n".join(table_selects)
+            
+            query = f"""
+        SELECT
+          hour,
+          day_of_week,
+          day_type,
+          COUNT(*) as request_count,
+          AVG(latency) AS avg_latency,
+          MIN(latency) AS min_latency,
+          MAX(latency) AS max_latency
+        FROM (
+{union_data}
+        )
         GROUP BY hour, day_of_week, day_type
         ORDER BY hour
         """
@@ -626,7 +845,11 @@ def get_agent_comparison(
         
         where_clause = " AND ".join(where_clauses)
         
-        query = f"""
+        # Build query for multiple tables using UNION ALL
+        tables = get_table_list()
+        
+        if len(tables) == 1:
+            query = f"""
         SELECT
           COALESCE(JSON_VALUE(T.full_request.labels.adk_agent_name), 'unknown') AS agent_name,
           COUNT(*) as total_calls,
@@ -645,9 +868,53 @@ def get_agent_comparison(
              END
           ) AS avg_tpot
         FROM
-          `{PROJECT_ID}.{DATASET}.{GEMINI_LOG_TABLE}` AS T
+          `{PROJECT_ID}.{DATASET_ID}.{tables[0]}` AS T
         WHERE
           {where_clause}
+        GROUP BY agent_name
+        ORDER BY total_calls DESC
+        """
+        else:
+            # Multiple tables - union raw data then aggregate
+            table_selects = []
+            for table in tables:
+                table_select = f"""
+        SELECT
+          COALESCE(JSON_VALUE(T.full_request.labels.adk_agent_name), 'unknown') AS agent_name,
+          CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000 AS latency,
+          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64) AS input_tokens,
+          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) AS output_tokens,
+          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.thoughtsTokenCount) AS INT64) AS thought_tokens,
+          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64) AS total_tokens_row,
+          CASE 
+            WHEN SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) > 0 
+            THEN (CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) / SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64)
+            ELSE 0 
+          END AS tpot
+        FROM
+          `{PROJECT_ID}.{DATASET_ID}.{table}` AS T
+        WHERE
+          {where_clause}
+        """
+                table_selects.append(table_select)
+            
+            union_data = "\nUNION ALL\n".join(table_selects)
+            
+            query = f"""
+        SELECT
+          agent_name,
+          COUNT(*) as total_calls,
+          AVG(latency) AS avg_latency,
+          APPROX_QUANTILES(latency, 100)[OFFSET(95)] AS p95_latency,
+          AVG(input_tokens) AS avg_input_tokens,
+          AVG(output_tokens) AS avg_output_tokens,
+          AVG(thought_tokens) AS avg_thought_tokens,
+          AVG(total_tokens_row) AS avg_total_tokens,
+          SUM(total_tokens_row) AS total_tokens,
+          AVG(tpot) AS avg_tpot
+        FROM (
+{union_data}
+        )
         GROUP BY agent_name
         ORDER BY total_calls DESC
         """
@@ -721,6 +988,392 @@ def get_agent_comparison(
         return json.dumps({"error": str(e)})
 
 
+def get_model_comparison(
+    time_range: str = "24h",
+    agent_name: Optional[str] = None
+) -> str:
+    """
+    Compare performance across different models.
+    
+    Extracts model name from the model field (e.g., "publishers/google/models/gemini-2.5-pro")
+    and returns per-model statistics including calls, latency, and token usage.
+    
+    Args:
+        time_range: Time range to analyze
+        agent_name: Filter by specific agent (optional)
+        
+    Returns:
+        JSON string with per-model performance comparison
+    """
+    try:
+        time_range_dict = json.loads(parse_time_range(time_range))
+        start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
+        
+        where_clauses = [
+            f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
+            "T.full_request IS NOT NULL",
+            "T.full_response IS NOT NULL",
+            "T.model IS NOT NULL",
+            "JSON_VALUE(T.metadata.request_latency) IS NOT NULL"
+        ]
+        
+        if agent_name:
+            where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
+        
+        where_clause = " AND ".join(where_clauses)
+        
+        # Build query for multiple tables using UNION ALL
+        tables = get_table_list()
+        
+        if len(tables) == 1:
+            # Single table - direct aggregation
+            tables = get_table_list()
+            
+            query = f"""
+        SELECT
+          SPLIT(T.model, '/')[SAFE_OFFSET(1)] AS publisher,
+          SPLIT(T.model, '/')[SAFE_OFFSET(3)] AS model_name,
+          T.model AS full_model_path,
+          COUNT(*) as total_calls,
+          AVG(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) AS avg_latency,
+          APPROX_QUANTILES(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000, 100)[OFFSET(95)] AS p95_latency,
+          AVG(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64)) AS avg_input_tokens,
+          AVG(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64)) AS avg_output_tokens,
+          AVG(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.thoughtsTokenCount) AS INT64)) AS avg_thought_tokens,
+          AVG(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64)) AS avg_total_tokens,
+          SUM(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64)) AS total_tokens,
+          AVG(
+             CASE 
+                WHEN SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) > 0 
+                THEN (CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) / SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64)
+                ELSE 0 
+             END
+          ) AS avg_tpot
+        FROM
+          `{PROJECT_ID}.{DATASET_ID}.{tables[0]}` AS T
+        WHERE
+          {where_clause}
+        GROUP BY publisher, model_name, full_model_path
+        ORDER BY total_calls DESC
+        """
+        else:
+            # Multiple tables - union raw data then aggregate
+            table_selects = []
+            for table in tables:
+                table_select = f"""
+            SELECT
+              T.model,
+              CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000 AS latency,
+              SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64) AS input_tokens,
+              SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) AS output_tokens,
+              SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.thoughtsTokenCount) AS INT64) AS thought_tokens,
+              SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64) AS total_tokens,
+              CASE 
+                WHEN SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) > 0 
+                THEN (CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) / SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64)
+                ELSE 0 
+              END AS tpot
+            FROM
+              `{PROJECT_ID}.{DATASET_ID}.{table}` AS T
+            WHERE
+              {where_clause}
+            """
+                table_selects.append(table_select)
+            
+            union_data = "\nUNION ALL\n".join(table_selects)
+            
+            query = f"""
+        SELECT
+          SPLIT(model, '/')[SAFE_OFFSET(1)] AS publisher,
+          SPLIT(model, '/')[SAFE_OFFSET(3)] AS model_name,
+          model AS full_model_path,
+          COUNT(*) as total_calls,
+          AVG(latency) AS avg_latency,
+          APPROX_QUANTILES(latency, 100)[OFFSET(95)] AS p95_latency,
+          AVG(input_tokens) AS avg_input_tokens,
+          AVG(output_tokens) AS avg_output_tokens,
+          AVG(thought_tokens) AS avg_thought_tokens,
+          AVG(total_tokens) AS avg_total_tokens,
+          SUM(total_tokens) AS total_tokens_sum,
+          AVG(tpot) AS avg_tpot
+        FROM (
+{union_data}
+        )
+        GROUP BY publisher, model_name, full_model_path
+        ORDER BY total_calls DESC
+        """
+        
+        df = execute_bigquery(query)
+        
+        if df.empty:
+            return json.dumps({"error": "No data found"})
+        
+        models = []
+        for _, row in df.iterrows():
+            # Calculate efficiency score (lower is better): latency per 1000 tokens
+            efficiency = None
+            if pd.notna(row['avg_input_tokens']) and row['avg_input_tokens'] > 0:
+                efficiency = float(row['avg_latency']) / (float(row['avg_input_tokens']) / 1000)
+            
+            # Use explicit thought tokens if available, otherwise estimate
+            avg_brain_tokens = 0
+            if pd.notna(row['avg_thought_tokens']):
+                 avg_brain_tokens = row['avg_thought_tokens']
+            elif pd.notna(row['avg_total_tokens']) and pd.notna(row['avg_input_tokens']) and pd.notna(row['avg_output_tokens']):
+                 avg_brain_tokens = max(0, row['avg_total_tokens'] - row['avg_input_tokens'] - row['avg_output_tokens'])
+            
+            # Thought ratio
+            thought_ratio = 0
+            if pd.notna(row['avg_output_tokens']) and row['avg_output_tokens'] > 0:
+                thought_ratio = avg_brain_tokens / row['avg_output_tokens']
+            
+            model_name_clean = row['model_name'] if pd.notna(row['model_name']) else row['full_model_path']
+            publisher = row['publisher'] if pd.notna(row['publisher']) else 'unknown'
+            
+            models.append({
+                "model_name": model_name_clean,
+                "publisher": publisher,
+                "full_model_path": row['full_model_path'],
+                "total_calls": int(row['total_calls']),
+                "avg_latency": float(row['avg_latency']),
+                "p95_latency": float(row['p95_latency']) if pd.notna(row['p95_latency']) else None,
+                "avg_input_tokens": float(row['avg_input_tokens']) if pd.notna(row['avg_input_tokens']) else None,
+                "avg_output_tokens": float(row['avg_output_tokens']) if pd.notna(row['avg_output_tokens']) else None,
+                "avg_thought_tokens": float(avg_brain_tokens),
+                "thought_output_ratio": float(thought_ratio),
+                "avg_tpot": float(row['avg_tpot']) if pd.notna(row['avg_tpot']) else None,
+                "total_tokens": int(row['total_tokens_sum'] if 'total_tokens_sum' in row else row['total_tokens']) if pd.notna(row.get('total_tokens_sum', row.get('total_tokens'))) else None,
+                "efficiency_score": efficiency
+            })
+        
+        # Rank by efficiency
+        models_with_efficiency = [m for m in models if m['efficiency_score'] is not None]
+        if models_with_efficiency:
+            models_with_efficiency.sort(key=lambda x: x['efficiency_score'])
+            best_model = models_with_efficiency[0]['model_name']
+            worst_model = models_with_efficiency[-1]['model_name']
+        else:
+            best_model = None
+            worst_model = None
+        
+        # Rank by latency
+        models_sorted_by_latency = sorted(models, key=lambda x: x['avg_latency'])
+        fastest_model = models_sorted_by_latency[0]['model_name'] if models_sorted_by_latency else None
+        slowest_model = models_sorted_by_latency[-1]['model_name'] if models_sorted_by_latency else None
+        
+        result = {
+            "metadata": {
+                "time_range": f"{start_time} to {end_time}",
+                "total_models": len(models)
+            },
+            "models": models,
+            "insights": {
+                "most_efficient_model": best_model,
+                "least_efficient_model": worst_model,
+                "fastest_model": fastest_model,
+                "slowest_model": slowest_model,
+                "most_active_model": models[0]['model_name'] if models else None
+            },
+            "summary": f"Analyzed {len(models)} models. Most active: {models[0]['model_name']} with {models[0]['total_calls']} calls. Fastest: {fastest_model} ({models_sorted_by_latency[0]['avg_latency']:.2f}s avg)" if models else "No data"
+        }
+        
+        return json.dumps(result, cls=AnalysisEncoder)
+        
+    except Exception as e:
+        logging.error(f"Error in get_model_comparison: {str(e)}")
+        return json.dumps({"error": str(e)})
+
+
+def get_agent_model_matrix(
+    time_range: str = "24h"
+) -> str:
+    """
+    Get performance matrix for all agent-model combinations.
+    
+    This provides a comprehensive view of how each agent performs with each model,
+    enabling detection of:
+    - Agent-specific model preferences
+    - Model switching impacts per agent
+    - Agent-model combinations that are problematic
+    
+    Args:
+        time_range: Time range to analyze
+        
+    Returns:
+        JSON string with agent-model performance matrix
+    """
+    try:
+        time_range_dict = json.loads(parse_time_range(time_range))
+        start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
+        
+        where_clauses = [
+            f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
+            "T.full_request IS NOT NULL",
+            "T.full_response IS NOT NULL",
+            "T.model IS NOT NULL",
+            "JSON_VALUE(T.metadata.request_latency) IS NOT NULL"
+        ]
+        
+        where_clause = " AND ".join(where_clauses)
+        
+        # Build query for multiple tables using UNION ALL
+        tables = get_table_list()
+        
+        if len(tables) == 1:
+            # Single table - direct aggregation
+            tables = get_table_list()
+            
+            query = f"""
+        SELECT
+          COALESCE(JSON_VALUE(T.full_request.labels.adk_agent_name), 'unknown') AS agent_name,
+          SPLIT(T.model, '/')[SAFE_OFFSET(1)] AS publisher,
+          SPLIT(T.model, '/')[SAFE_OFFSET(3)] AS model_name,
+          T.model AS full_model_path,
+          COUNT(*) as total_calls,
+          AVG(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) AS avg_latency,
+          APPROX_QUANTILES(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000, 100)[OFFSET(95)] AS p95_latency,
+          AVG(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64)) AS avg_input_tokens,
+          AVG(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64)) AS avg_output_tokens,
+          AVG(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.thoughtsTokenCount) AS INT64)) AS avg_thought_tokens,
+          AVG(
+             CASE 
+                WHEN SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) > 0 
+                THEN (CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) / SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64)
+                ELSE 0 
+             END
+          ) AS avg_tpot
+        FROM
+          `{PROJECT_ID}.{DATASET_ID}.{tables[0]}` AS T
+        WHERE
+          {where_clause}
+        GROUP BY agent_name, publisher, model_name, full_model_path
+        ORDER BY agent_name, total_calls DESC
+        """
+        else:
+            # Multiple tables - union raw data then aggregate
+            table_selects = []
+            for table in tables:
+                table_select = f"""
+            SELECT
+              COALESCE(JSON_VALUE(T.full_request.labels.adk_agent_name), 'unknown') AS agent_name,
+              T.model,
+              CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000 AS latency,
+              SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64) AS input_tokens,
+              SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) AS output_tokens,
+              SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.thoughtsTokenCount) AS INT64) AS thought_tokens,
+              CASE 
+                WHEN SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) > 0 
+                THEN (CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) / SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64)
+                ELSE 0 
+              END AS tpot
+            FROM
+              `{PROJECT_ID}.{DATASET_ID}.{table}` AS T
+            WHERE
+              {where_clause}
+            """
+                table_selects.append(table_select)
+            
+            union_data = "\nUNION ALL\n".join(table_selects)
+            
+            query = f"""
+        SELECT
+          agent_name,
+          SPLIT(model, '/')[SAFE_OFFSET(1)] AS publisher,
+          SPLIT(model, '/')[SAFE_OFFSET(3)] AS model_name,
+          model AS full_model_path,
+          COUNT(*) as total_calls,
+          AVG(latency) AS avg_latency,
+          APPROX_QUANTILES(latency, 100)[OFFSET(95)] AS p95_latency,
+          AVG(input_tokens) AS avg_input_tokens,
+          AVG(output_tokens) AS avg_output_tokens,
+          AVG(thought_tokens) AS avg_thought_tokens,
+          AVG(tpot) AS avg_tpot
+        FROM (
+{union_data}
+        )
+        GROUP BY agent_name, publisher, model_name, full_model_path
+        ORDER BY agent_name, total_calls DESC
+        """
+        
+        df = execute_bigquery(query)
+        
+        if df.empty:
+            return json.dumps({"error": "No data found"})
+        
+        # Build matrix structure: agent -> models
+        agent_model_matrix = {}
+        all_models = set()
+        all_agents = set()
+        
+        for _, row in df.iterrows():
+            agent = row['agent_name']
+            model_name_clean = row['model_name'] if pd.notna(row['model_name']) else row['full_model_path']
+            
+            all_agents.add(agent)
+            all_models.add(model_name_clean)
+            
+            if agent not in agent_model_matrix:
+                agent_model_matrix[agent] = {}
+            
+            agent_model_matrix[agent][model_name_clean] = {
+                "total_calls": int(row['total_calls']),
+                "avg_latency": float(row['avg_latency']),
+                "p95_latency": float(row['p95_latency']) if pd.notna(row['p95_latency']) else None,
+                "avg_input_tokens": float(row['avg_input_tokens']) if pd.notna(row['avg_input_tokens']) else None,
+                "avg_output_tokens": float(row['avg_output_tokens']) if pd.notna(row['avg_output_tokens']) else None,
+                "avg_thought_tokens": float(row['avg_thought_tokens']) if pd.notna(row['avg_thought_tokens']) else None,
+                "avg_tpot": float(row['avg_tpot']) if pd.notna(row['avg_tpot']) else None,
+                "publisher": row['publisher'] if pd.notna(row['publisher']) else 'unknown'
+            }
+        
+        # Find insights
+        slowest_combo = None
+        fastest_combo = None
+        min_latency = float('inf')
+        max_latency = 0
+        
+        for agent, models in agent_model_matrix.items():
+            for model, stats in models.items():
+                latency = stats['avg_latency']
+                if latency < min_latency:
+                    min_latency = latency
+                    fastest_combo = {"agent": agent, "model": model, "latency": latency}
+                if latency > max_latency:
+                    max_latency = latency
+                    slowest_combo = {"agent": agent, "model": model, "latency": latency}
+        
+        # Check for model switching within agents
+        agents_with_multiple_models = {
+            agent: list(models.keys()) 
+            for agent, models in agent_model_matrix.items() 
+            if len(models) > 1
+        }
+        
+        result = {
+            "metadata": {
+                "time_range": f"{start_time} to {end_time}",
+                "total_agents": len(all_agents),
+                "total_models": len(all_models),
+                "total_combinations": sum(len(models) for models in agent_model_matrix.values())
+            },
+            "matrix": agent_model_matrix,
+            "agents_with_multiple_models": agents_with_multiple_models,
+            "insights": {
+                "slowest_combination": slowest_combo,
+                "fastest_combination": fastest_combo,
+                "model_switching_detected": len(agents_with_multiple_models) > 0,
+                "agents_switching_models": list(agents_with_multiple_models.keys()) if agents_with_multiple_models else []
+            },
+            "summary": f"Analyzed {len(all_agents)} agents × {len(all_models)} models = {sum(len(models) for models in agent_model_matrix.values())} combinations. {len(agents_with_multiple_models)} agents use multiple models."
+        }
+        
+        return json.dumps(result, cls=AnalysisEncoder)
+        
+    except Exception as e:
+        logging.error(f"Error in get_agent_model_matrix: {str(e)}")
+        return json.dumps({"error": str(e)})
+
+
 def get_token_correlation(
     time_range: str = "24h",
     model_name: Optional[str] = None,
@@ -750,16 +1403,45 @@ def get_token_correlation(
         
         where_clause = " AND ".join(where_clauses)
         
-        query = f"""
+        # Build query for multiple tables using UNION ALL
+        tables = get_table_list()
+        
+        if len(tables) == 1:
+            query = f"""
         SELECT
           CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000 AS latency,
           SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64) AS input_tokens,
           SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) AS output_tokens,
           SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.thoughtsTokenCount) AS INT64) AS thought_tokens
         FROM
-          `{PROJECT_ID}.{DATASET}.{GEMINI_LOG_TABLE}` AS T
+          `{PROJECT_ID}.{DATASET_ID}.{tables[0]}` AS T
         WHERE
           {where_clause}
+        LIMIT 1000
+        """
+        else:
+            # Multiple tables - union data
+            table_selects = []
+            for table in tables:
+                table_select = f"""
+        SELECT
+          CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000 AS latency,
+          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64) AS input_tokens,
+          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) AS output_tokens,
+          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.thoughtsTokenCount) AS INT64) AS thought_tokens
+        FROM
+          `{PROJECT_ID}.{DATASET_ID}.{table}` AS T
+        WHERE
+          {where_clause}
+        """
+                table_selects.append(table_select)
+            
+            union_data = "\nUNION ALL\n".join(table_selects)
+            
+            query = f"""
+        SELECT * FROM (
+{union_data}
+        )
         LIMIT 1000
         """
         
@@ -834,15 +1516,46 @@ def get_outlier_analysis(
         
         where_clause = " AND ".join(where_clauses)
         
+        # Build query for multiple tables using UNION ALL
+        tables = get_table_list()
+        
         # First get mean and std
-        stats_query = f"""
+        if len(tables) == 1:
+            tables = get_table_list()
+            
+            stats_query = f"""
         SELECT
           AVG(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) AS mean_latency,
           STDDEV(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) AS std_latency
         FROM
-          `{PROJECT_ID}.{DATASET}.{GEMINI_LOG_TABLE}` AS T
+          `{PROJECT_ID}.{DATASET_ID}.{tables[0]}` AS T
         WHERE
           {where_clause}
+        """
+        else:
+            table_selects = []
+            for table in tables:
+                table_select = f"""
+        SELECT
+          CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000 AS latency
+        FROM
+          `{PROJECT_ID}.{DATASET_ID}.{table}` AS T
+        WHERE
+          {where_clause}
+        """
+                table_selects.append(table_select)
+            
+            union_data = "\nUNION ALL\n".join(table_selects)
+            
+            tables = get_table_list()
+            
+            stats_query = f"""
+        SELECT
+          AVG(latency) AS mean_latency,
+          STDDEV(latency) AS std_latency
+        FROM (
+{union_data}
+        )
         """
         
         stats_df = execute_bigquery(stats_query)
@@ -851,7 +1564,10 @@ def get_outlier_analysis(
         threshold = mean_latency + (threshold_std * std_latency)
         
         # Now get outliers
-        outliers_query = f"""
+        if len(tables) == 1:
+            tables = get_table_list()
+            
+            outliers_query = f"""
         SELECT
           CAST(T.request_id AS STRING) AS request_id,
           T.logging_time,
@@ -861,10 +1577,39 @@ def get_outlier_analysis(
           SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) AS output_tokens,
           SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.thoughtsTokenCount) AS INT64) AS thought_tokens
         FROM
-          `{PROJECT_ID}.{DATASET}.{GEMINI_LOG_TABLE}` AS T
+          `{PROJECT_ID}.{DATASET_ID}.{tables[0]}` AS T
         WHERE
           {where_clause}
           AND CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000 > {threshold}
+        ORDER BY latency DESC
+        LIMIT 50
+        """
+        else:
+            table_selects = []
+            for table in tables:
+                table_select = f"""
+        SELECT
+          CAST(T.request_id AS STRING) AS request_id,
+          T.logging_time,
+          CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000 AS latency,
+          COALESCE(JSON_VALUE(T.full_request.labels.adk_agent_name), 'unknown') AS agent_name,
+          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64) AS input_tokens,
+          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) AS output_tokens,
+          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.thoughtsTokenCount) AS INT64) AS thought_tokens
+        FROM
+          `{PROJECT_ID}.{DATASET_ID}.{table}` AS T
+        WHERE
+          {where_clause}
+          AND CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000 > {threshold}
+        """
+                table_selects.append(table_select)
+            
+            union_data = "\nUNION ALL\n".join(table_selects)
+            
+            outliers_query = f"""
+        SELECT * FROM (
+{union_data}
+        )
         ORDER BY latency DESC
         LIMIT 50
         """
@@ -933,6 +1678,8 @@ def get_slowest_queries(
         
         where_clause = " AND ".join(where_clauses)
         
+        tables = get_table_list()
+        
         query = f"""
         SELECT
           CAST(T.request_id AS STRING) AS request_id,
@@ -954,7 +1701,7 @@ def get_slowest_queries(
             LIMIT 1
           ) AS last_user_message
         FROM
-          `{PROJECT_ID}.{DATASET}.{GEMINI_LOG_TABLE}` AS T
+          `{PROJECT_ID}.{DATASET_ID}.{tables[0]}` AS T
         WHERE
           {where_clause}
         ORDER BY latency DESC
@@ -1021,6 +1768,8 @@ def get_query_details(request_id: str) -> str:
     Merged from slow_query_analyzer's fetch_single_query.
     """
     try:
+        tables = get_table_list()
+        
         query = f"""
         SELECT
           T.logging_time,
@@ -1035,7 +1784,7 @@ def get_query_details(request_id: str) -> str:
           SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64) AS input_tokens,
           SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64) AS total_tokens
         FROM
-          `{PROJECT_ID}.{DATASET}.{GEMINI_LOG_TABLE}` AS T
+          `{PROJECT_ID}.{DATASET_ID}.{tables[0]}` AS T
         WHERE
           CAST(T.request_id AS STRING) = @request_id
         LIMIT 1
@@ -1104,6 +1853,8 @@ def get_concurrent_request_impact(
         
         where_clause = " AND ".join(where_clauses)
         
+        tables = get_table_list()
+        
         query = f"""
         WITH bucketed_requests AS (
           SELECT
@@ -1111,7 +1862,7 @@ def get_concurrent_request_impact(
             TIMESTAMP_ADD(TIMESTAMP_TRUNC(T.logging_time, SECOND, 'UTC'), INTERVAL {bucket_size} SECOND) AS bucket_end,
             CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000 AS latency
           FROM
-            `{PROJECT_ID}.{DATASET}.{GEMINI_LOG_TABLE}` AS T
+            `{PROJECT_ID}.{DATASET_ID}.{tables[0]}` AS T
           WHERE
             {where_clause}
         )
@@ -1200,13 +1951,15 @@ def detect_performance_degradation(
         
         where_clause = " AND ".join(where_clauses)
         
+        tables = get_table_list()
+        
         query = f"""
         SELECT
           TIMESTAMP_TRUNC(T.logging_time, HOUR) AS hour,
           AVG(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) AS avg_latency,
           COUNT(*) as request_count
         FROM
-          `{PROJECT_ID}.{DATASET}.{GEMINI_LOG_TABLE}` AS T
+          `{PROJECT_ID}.{DATASET_ID}.{tables[0]}` AS T
         WHERE
           {where_clause}
         GROUP BY hour
@@ -1287,6 +2040,8 @@ def get_cost_analysis(
         
         where_clause = " AND ".join(where_clauses)
         
+        tables = get_table_list()
+        
         query = f"""
         SELECT
           COALESCE(JSON_VALUE(T.full_request.labels.adk_agent_name), 'unknown') AS agent_name,
@@ -1296,7 +2051,7 @@ def get_cost_analysis(
           SUM(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64)) AS total_tokens,
           AVG(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64)) AS avg_tokens_per_request
         FROM
-          `{PROJECT_ID}.{DATASET}.{GEMINI_LOG_TABLE}` AS T
+          `{PROJECT_ID}.{DATASET_ID}.{tables[0]}` AS T
         WHERE
           {where_clause}
         GROUP BY agent_name
@@ -1385,6 +2140,8 @@ def compare_time_periods(
             
             where_clause = " AND ".join(where_clauses)
             
+            tables = get_table_list()
+            
             query = f"""
             SELECT
               COUNT(*) as total_requests,
@@ -1392,7 +2149,7 @@ def compare_time_periods(
               APPROX_QUANTILES(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000, 100)[OFFSET(95)] AS p95_latency,
               AVG(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64)) AS avg_tokens
             FROM
-              `{PROJECT_ID}.{DATASET}.{GEMINI_LOG_TABLE}` AS T
+              `{PROJECT_ID}.{DATASET_ID}.{tables[0]}` AS T
             WHERE
               {where_clause}
             """
@@ -1479,6 +2236,8 @@ def cluster_slow_queries(
         
         where_clause = " AND ".join(where_clauses)
         
+        tables = get_table_list()
+        
         query = f"""
         SELECT
           CAST(T.request_id AS STRING) AS request_id,
@@ -1492,7 +2251,7 @@ def cluster_slow_queries(
           -- Extract first 200 chars of request for similarity analysis
           SUBSTR(TO_JSON_STRING(T.full_request), 1, 200) AS request_preview
         FROM
-          `{PROJECT_ID}.{DATASET}.{GEMINI_LOG_TABLE}` AS T
+          `{PROJECT_ID}.{DATASET_ID}.{tables[0]}` AS T
         WHERE
           {where_clause}
         ORDER BY latency DESC
@@ -1643,6 +2402,8 @@ def analyze_correlation_detailed(
         
         where_clause = " AND ".join(where_clauses)
         
+        tables = get_table_list()
+        
         query = f"""
         SELECT
           CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000 AS latency,
@@ -1651,7 +2412,7 @@ def analyze_correlation_detailed(
           SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.thoughtsTokenCount) AS INT64) AS thought_tokens,
           SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64) AS total_tokens
         FROM
-          `{PROJECT_ID}.{DATASET}.{GEMINI_LOG_TABLE}` AS T
+          `{PROJECT_ID}.{DATASET_ID}.{tables[0]}` AS T
         WHERE
           {where_clause}
         LIMIT 5000
@@ -1750,16 +2511,42 @@ def fetch_slow_queries(num_records: int = 20, agent_name: Optional[str] = None) 
         if agent_name:
             where_clause += f" AND JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'"
 
-        query = f"""
+        tables = get_table_list()
+        
+        if len(tables) == 1:
+            query = f"""
         SELECT
           CAST(T.request_id AS STRING) AS request_id,
           ROUND(SAFE_CAST(JSON_VALUE(T.metadata.request_latency) AS FLOAT64) / 1000.0, 2) AS request_latency_seconds
         FROM
-          `{PROJECT_ID}.{DATASET}.{GEMINI_LOG_TABLE}` AS T
+          `{PROJECT_ID}.{DATASET_ID}.{tables[0]}` AS T
         WHERE
           {where_clause}
         ORDER BY
           request_latency_seconds DESC
+        LIMIT {num_records}
+        """
+        else:
+            table_selects = []
+            for table in tables:
+                table_select = f"""
+        SELECT
+          CAST(T.request_id AS STRING) AS request_id,
+          ROUND(SAFE_CAST(JSON_VALUE(T.metadata.request_latency) AS FLOAT64) / 1000.0, 2) AS request_latency_seconds
+        FROM
+          `{PROJECT_ID}.{DATASET_ID}.{table}` AS T
+        WHERE
+          {where_clause}
+        """
+                table_selects.append(table_select)
+            
+            union_data = "\nUNION ALL\n".join(table_selects)
+            
+            query = f"""
+        SELECT * FROM (
+{union_data}
+        )
+        ORDER BY request_latency_seconds DESC
         LIMIT {num_records}
         """
         
@@ -1804,6 +2591,8 @@ def fetch_single_query(request_id: str) -> str:
     """
     logging.info(f"[PROGRESS] Starting fetch for query {request_id}")
     try:
+        tables = get_table_list()
+        
         query = f"""
         SELECT
           T.logging_time,
@@ -1818,7 +2607,7 @@ def fetch_single_query(request_id: str) -> str:
           SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64) AS prompt_token_count,
           SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64) AS total_token_count
         FROM
-          `{PROJECT_ID}.{DATASET}.{GEMINI_LOG_TABLE}` AS T
+          `{PROJECT_ID}.{DATASET_ID}.{tables[0]}` AS T
         WHERE
           CAST(T.request_id AS STRING) = @request_id
         LIMIT 1
@@ -1912,6 +2701,8 @@ def fetch_slow_queries_batch(
         
         where_clause = " AND ".join(where_clauses)
         
+        tables = get_table_list()
+        
         query = f"""
         SELECT
           T.logging_time,
@@ -1929,7 +2720,7 @@ def fetch_slow_queries_batch(
           -- Extract last 500 chars of prompt to capture user question (generic approach)
           SUBSTR(JSON_VALUE(T.full_request.contents[0].parts[0].text), -500) AS query_preview
         FROM
-          `{PROJECT_ID}.{DATASET}.{GEMINI_LOG_TABLE}` AS T
+          `{PROJECT_ID}.{DATASET_ID}.{tables[0]}` AS T
         WHERE
           {where_clause}
         ORDER BY request_latency_seconds DESC
@@ -2029,6 +2820,8 @@ def fetch_fastest_queries(
         
         where_clause = " AND ".join(where_clauses)
         
+        tables = get_table_list()
+        
         query = f"""
         SELECT
           T.logging_time,
@@ -2045,7 +2838,7 @@ def fetch_fastest_queries(
           -- Extract last 500 chars of prompt to capture user question (generic approach)
           SUBSTR(JSON_VALUE(T.full_request.contents[0].parts[0].text), -500) AS query_preview
         FROM
-          `{PROJECT_ID}.{DATASET}.{GEMINI_LOG_TABLE}` AS T
+          `{PROJECT_ID}.{DATASET_ID}.{tables[0]}` AS T
         WHERE
           {where_clause}
         ORDER BY request_latency_seconds ASC
@@ -2131,12 +2924,14 @@ def get_token_velocity(
             
         where_clause = " AND ".join(where_clauses)
         
+        tables = get_table_list()
+        
         query = f"""
         SELECT
           CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000 AS latency,
           SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) AS output_tokens
         FROM
-          `{PROJECT_ID}.{DATASET}.{GEMINI_LOG_TABLE}` AS T
+          `{PROJECT_ID}.{DATASET_ID}.{tables[0]}` AS T
         WHERE
           {where_clause}
           AND SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) > 0
@@ -2237,6 +3032,8 @@ def analyze_request_queuing(
         where_clause = " AND ".join(where_clauses)
         
         # Group by small time windows (micro-bursts)
+        tables = get_table_list()
+        
         query = f"""
         WITH bursts AS (
           SELECT
@@ -2245,7 +3042,7 @@ def analyze_request_queuing(
             AVG(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) AS avg_latency,
             MAX(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) AS max_latency
           FROM
-            `{PROJECT_ID}.{DATASET}.{GEMINI_LOG_TABLE}` AS T
+            `{PROJECT_ID}.{DATASET_ID}.{tables[0]}` AS T
           WHERE
             {where_clause}
           GROUP BY burst_time
@@ -2417,6 +3214,7 @@ def save_analysis_report(
         A JSON string confirming the save or reporting an error
     """
     try:
+        print(f"DEBUG: save_analysis_report CALLED with filename={filename}") # DEBUG PRINT
         import os
         from datetime import datetime
         
@@ -2548,6 +3346,8 @@ def analyze_thinking_overhead(
         
         where_clause = " AND ".join(where_clauses)
         
+        tables = get_table_list()
+        
         query = f"""
         SELECT
           CAST(T.request_id AS STRING) AS request_id,
@@ -2557,7 +3357,7 @@ def analyze_thinking_overhead(
           SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) AS output_tokens,
           SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64) AS total_tokens
         FROM
-          `{PROJECT_ID}.{DATASET}.{GEMINI_LOG_TABLE}` AS T
+          `{PROJECT_ID}.{DATASET_ID}.{tables[0]}` AS T
         WHERE
           {where_clause}
         ORDER BY latency DESC
@@ -2649,6 +3449,8 @@ def detect_compute_inefficiency(
         
         where_clause = " AND ".join(where_clauses)
         
+        tables = get_table_list()
+        
         query = f"""
         SELECT
           CAST(T.request_id AS STRING) AS request_id,
@@ -2659,7 +3461,7 @@ def detect_compute_inefficiency(
           -- Preview for context
           SUBSTR(TO_JSON_STRING(T.full_request), 1, 100) AS request_preview
         FROM
-          `{PROJECT_ID}.{DATASET}.{GEMINI_LOG_TABLE}` AS T
+          `{PROJECT_ID}.{DATASET_ID}.{tables[0]}` AS T
         WHERE
           {where_clause}
         ORDER BY latency DESC
@@ -2702,3 +3504,527 @@ def detect_compute_inefficiency(
         error_msg = f"Error in detect_compute_inefficiency: {str(e)}"
         logging.error(error_msg)
         return json.dumps({"error": error_msg})
+
+def get_generation_config_comparison(
+    time_range: str = "24h",
+    agent_name: Optional[str] = None,
+    model_name: Optional[str] = None
+) -> str:
+    """
+    Compare latency performance across different generation config settings.
+    
+    Groups requests by temperature and maxOutputTokens to identify which
+    configurations lead to better or worse latency performance.
+    
+    Args:
+        time_range: Time range to analyze
+        agent_name: Filter by specific agent (optional)
+        model_name: Filter by specific model (optional)
+        
+    Returns:
+        JSON string with per-config performance comparison
+    """
+    try:
+        time_range_dict = json.loads(parse_time_range(time_range))
+        start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
+        
+        where_clauses = [
+            f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
+            "T.full_request IS NOT NULL",
+            "T.full_response IS NOT NULL",
+            "JSON_VALUE(T.metadata.request_latency) IS NOT NULL",
+            "JSON_VALUE(T.full_request, '$.generationConfig.temperature') IS NOT NULL"
+        ]
+        
+        if agent_name:
+            where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
+        if model_name:
+            where_clauses.append(f"T.model LIKE '%{model_name}%'")
+        
+        where_clause = " AND ".join(where_clauses)
+        
+        tables = get_table_list()
+        
+        if len(tables) == 1:
+            query = f"""
+        SELECT
+          CASE 
+            WHEN SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.temperature') AS FLOAT64) IS NULL THEN 'Unknown'
+            WHEN SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.temperature') AS FLOAT64) <= 0.3 THEN 'Low (0.0-0.3)'
+            WHEN SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.temperature') AS FLOAT64) <= 0.7 THEN 'Medium (0.4-0.7)'
+            ELSE 'High (0.8-1.0)'
+          END AS temperature_range,
+          CASE
+            WHEN SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.maxOutputTokens') AS INT64) IS NULL THEN 'Unspecified'
+            WHEN SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.maxOutputTokens') AS INT64) <= 2048 THEN '≤2048'
+            WHEN SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.maxOutputTokens') AS INT64) <= 4096 THEN '2049-4096'
+            WHEN SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.maxOutputTokens') AS INT64) <= 8192 THEN '4097-8192'
+            ELSE '>8192'
+          END AS max_tokens_range,
+          COUNT(*) as request_count,
+          AVG(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) AS avg_latency,
+          APPROX_QUANTILES(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000, 100)[OFFSET(95)] AS p95_latency,
+          AVG(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64)) AS avg_output_tokens,
+          AVG(SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.maxOutputTokens') AS INT64)) AS avg_max_tokens_config,
+          AVG(SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.temperature') AS FLOAT64)) AS avg_temperature,
+          AVG(
+            SAFE_DIVIDE(
+              SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64),
+              SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.maxOutputTokens') AS INT64)
+            )
+          ) AS token_efficiency_ratio
+        FROM
+          `{PROJECT_ID}.{DATASET_ID}.{tables[0]}` AS T
+        WHERE
+          {where_clause}
+        GROUP BY temperature_range, max_tokens_range
+        ORDER BY request_count DESC
+        """
+        else:
+            # Multiple tables - union approach
+            table_selects = []
+            for table in tables:
+                table_select = f"""
+            SELECT
+              CASE 
+                WHEN SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.temperature') AS FLOAT64) IS NULL THEN 'Unknown'
+                WHEN SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.temperature') AS FLOAT64) <= 0.3 THEN 'Low (0.0-0.3)'
+                WHEN SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.temperature') AS FLOAT64) <= 0.7 THEN 'Medium (0.4-0.7)'
+                ELSE 'High (0.8-1.0)'
+              END AS temperature_range,
+              CASE
+                WHEN SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.maxOutputTokens') AS INT64) IS NULL THEN 'Unspecified'
+                WHEN SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.maxOutputTokens') AS INT64) <= 2048 THEN '≤2048'
+                WHEN SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.maxOutputTokens') AS INT64) <= 4096 THEN '2049-4096'
+                WHEN SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.maxOutputTokens') AS INT64) <= 8192 THEN '4097-8192'
+                ELSE '>8192'
+              END AS max_tokens_range,
+              CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000 AS latency,
+              SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) AS output_tokens,
+              SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.maxOutputTokens') AS INT64) AS max_tokens_config,
+              SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.temperature') AS FLOAT64) AS temperature,
+              SAFE_DIVIDE(
+                SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64),
+                SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.maxOutputTokens') AS INT64)
+              ) AS token_efficiency
+            FROM
+              `{PROJECT_ID}.{DATASET_ID}.{table}` AS T
+            WHERE
+              {where_clause}
+            """
+                table_selects.append(table_select)
+            
+            union_data = "\nUNION ALL\n".join(table_selects)
+            
+            query = f"""
+        SELECT
+          temperature_range,
+          max_tokens_range,
+          COUNT(*) as request_count,
+          AVG(latency) AS avg_latency,
+          APPROX_QUANTILES(latency, 100)[OFFSET(95)] AS p95_latency,
+          AVG(output_tokens) AS avg_output_tokens,
+          AVG(max_tokens_config) AS avg_max_tokens_config,
+          AVG(temperature) AS avg_temperature,
+          AVG(token_efficiency) AS token_efficiency_ratio
+        FROM (
+{union_data}
+        )
+        GROUP BY temperature_range, max_tokens_range
+        ORDER BY request_count DESC
+        """
+        
+        df = execute_bigquery(query)
+        
+        if df.empty:
+            return json.dumps({
+                "error": "No data found with generationConfig information",
+                "metadata": {"time_range": f"{start_time} to {end_time}"}
+            })
+        
+        configs = []
+        for _, row in df.iterrows():
+            config_entry = {
+                "temperature_range": row['temperature_range'],
+                "max_tokens_range": row['max_tokens_range'],
+                "request_count": int(row['request_count']),
+                "avg_latency": float(row['avg_latency']) if pd.notna(row['avg_latency']) else None,
+                "p95_latency": float(row['p95_latency']) if pd.notna(row['p95_latency']) else None,
+                "avg_output_tokens": float(row['avg_output_tokens']) if pd.notna(row['avg_output_tokens']) else None,
+                "avg_max_tokens_config": float(row['avg_max_tokens_config']) if pd.notna(row['avg_max_tokens_config']) else None,
+                "avg_temperature": float(row['avg_temperature']) if pd.notna(row['avg_temperature']) else None,
+                "token_efficiency_ratio": float(row['token_efficiency_ratio']) if pd.notna(row['token_efficiency_ratio']) else None
+            }
+            configs.append(config_entry)
+        
+        # Find best and worst configs
+        valid_configs = [c for c in configs if c['avg_latency'] is not None]
+        if valid_configs:
+            best_config = min(valid_configs, key=lambda x: x['avg_latency'])
+            worst_config = max(valid_configs, key=lambda x: x['avg_latency'])
+            
+            # Find most efficient (highest token efficiency ratio)
+            efficient_configs = [c for c in configs if c['token_efficiency_ratio'] is not None]
+            most_efficient = max(efficient_configs, key=lambda x: x['token_efficiency_ratio']) if efficient_configs else None
+        else:
+            best_config = None
+            worst_config = None
+            most_efficient = None
+        
+        result = {
+            "metadata": {
+                "time_range": f"{start_time} to {end_time}",
+                "agent_name": agent_name or "all",
+                "model_name": model_name or "all",
+                "total_requests": int(df['request_count'].sum())
+            },
+            "configurations": configs,
+            "insights": {
+                "best_latency_config": {
+                    "temperature": best_config['temperature_range'],
+                    "max_tokens": best_config['max_tokens_range'],
+                    "avg_latency": best_config['avg_latency']
+                } if best_config else None,
+                "worst_latency_config": {
+                    "temperature": worst_config['temperature_range'],
+                    "max_tokens": worst_config['max_tokens_range'],
+                    "avg_latency": worst_config['avg_latency']
+                } if worst_config else None,
+                "most_efficient_config": {
+                    "temperature": most_efficient['temperature_range'],
+                    "max_tokens": most_efficient['max_tokens_range'],
+                    "efficiency_ratio": most_efficient['token_efficiency_ratio']
+                } if most_efficient else None
+            },
+            "summary": f"Analyzed {len(configs)} config combinations. Best latency: {best_config['temperature_range']} temp, {best_config['max_tokens_range']} tokens ({best_config['avg_latency']:.2f}s)" if best_config else "No data"
+        }
+        
+        return json.dumps(result, cls=AnalysisEncoder)
+        
+    except Exception as e:
+        error_msg = f"Error in get_generation_config_comparison: {str(e)}"
+        logging.error(error_msg)
+        return json.dumps({"error": error_msg})
+
+
+def analyze_config_correlation(
+    time_range: str = "24h",
+    agent_name: Optional[str] = None,
+    model_name: Optional[str] = None
+) -> str:
+    """
+    Analyze correlation between generation config parameters and latency.
+    
+    Calculates correlation coefficients for:
+    - Temperature vs latency
+    - maxOutputTokens vs latency
+    - topK vs latency (if available)
+    - topP vs latency (if available)
+    
+    Args:
+        time_range: Time range to analyze
+        agent_name: Filter by specific agent (optional)
+        model_name: Filter by specific model (optional)
+        
+    Returns:
+        JSON string with correlation analysis and scatter plot data
+    """
+    try:
+        time_range_dict = json.loads(parse_time_range(time_range))
+        start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
+        
+        where_clauses = [
+            f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
+            "T.full_request IS NOT NULL",
+            "T.full_response IS NOT NULL",
+            "JSON_VALUE(T.metadata.request_latency) IS NOT NULL"
+        ]
+        
+        if agent_name:
+            where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
+        if model_name:
+            where_clauses.append(f"T.model LIKE '%{model_name}%'")
+        
+        where_clause = " AND ".join(where_clauses)
+        
+        tables = get_table_list()
+        
+        # Build query for all tables
+        if len(tables) == 1:
+            tables = get_table_list()
+            
+            query = f"""
+        SELECT
+          CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000 AS latency,
+          SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.temperature') AS FLOAT64) AS temperature,
+          SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.maxOutputTokens') AS INT64) AS max_output_tokens,
+          SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.topK') AS INT64) AS top_k,
+          SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.topP') AS FLOAT64) AS top_p,
+          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) AS output_tokens
+        FROM
+          `{PROJECT_ID}.{DATASET_ID}.{tables[0]}` AS T
+        WHERE
+          {where_clause}
+        """
+        else:
+            table_selects = []
+            for table in tables:
+                table_select = f"""
+            SELECT
+              CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000 AS latency,
+              SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.temperature') AS FLOAT64) AS temperature,
+              SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.maxOutputTokens') AS INT64) AS max_output_tokens,
+              SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.topK') AS INT64) AS top_k,
+              SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.topP') AS FLOAT64) AS top_p,
+              SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) AS output_tokens
+            FROM
+              `{PROJECT_ID}.{DATASET_ID}.{table}` AS T
+            WHERE
+              {where_clause}
+            """
+                table_selects.append(table_select)
+            
+            query = "\nUNION ALL\n".join(table_selects)
+        
+        df = execute_bigquery(query)
+        
+        if df.empty or len(df) < 10:
+            return json.dumps({
+                "error": "Insufficient data for correlation analysis",
+                "metadata": {"time_range": f"{start_time} to {end_time}", "rows": len(df)}
+            })
+        
+        # Calculate correlations
+        correlations = {}
+        scatter_data = {}
+        
+        # Temperature vs Latency
+        temp_data = df[['latency', 'temperature']].dropna()
+        if len(temp_data) >= 10:
+            corr = temp_data['latency'].corr(temp_data['temperature'])
+            correlations['temperature_vs_latency'] = {
+                "correlation": float(corr),
+                "sample_size": len(temp_data),
+                "interpretation": "strong" if abs(corr) > 0.7 else "moderate" if abs(corr) > 0.4 else "weak"
+            }
+            # Sample data for scatter plot
+            sample = temp_data.sample(n=min(100, len(temp_data)))
+            scatter_data['temperature_vs_latency'] = sample.to_dict('records')
+        
+        # MaxOutputTokens vs Latency
+        max_tokens_data = df[['latency', 'max_output_tokens']].dropna()
+        if len(max_tokens_data) >= 10:
+            corr = max_tokens_data['latency'].corr(max_tokens_data['max_output_tokens'])
+            correlations['max_output_tokens_vs_latency'] = {
+                "correlation": float(corr),
+                "sample_size": len(max_tokens_data),
+                "interpretation": "strong" if abs(corr) > 0.7 else "moderate" if abs(corr) > 0.4 else "weak"
+            }
+            sample = max_tokens_data.sample(n=min(100, len(max_tokens_data)))
+            scatter_data['max_output_tokens_vs_latency'] = sample.to_dict('records')
+        
+        # TopK vs Latency
+        topk_data = df[['latency', 'top_k']].dropna()
+        if len(topk_data) >= 10:
+            corr = topk_data['latency'].corr(topk_data['top_k'])
+            correlations['top_k_vs_latency'] = {
+                "correlation": float(corr),
+                "sample_size": len(topk_data),
+                "interpretation": "strong" if abs(corr) > 0.7 else "moderate" if abs(corr) > 0.4 else "weak"
+            }
+        
+        # TopP vs Latency
+        topp_data = df[['latency', 'top_p']].dropna()
+        if len(topp_data) >= 10:
+            corr = topp_data['latency'].corr(topp_data['top_p'])
+            correlations['top_p_vs_latency'] = {
+                "correlation": float(corr),
+                "sample_size": len(topp_data),
+                "interpretation": "strong" if abs(corr) > 0.7 else "moderate" if abs(corr) > 0.4 else "weak"
+            }
+        
+        # Additional insight: Actual output tokens vs configured max
+        output_vs_max_data = df[['output_tokens', 'max_output_tokens']].dropna()
+        if len(output_vs_max_data) >= 10:
+            avg_utilization = (output_vs_max_data['output_tokens'] / output_vs_max_data['max_output_tokens']).mean()
+            correlations['output_vs_max_tokens'] = {
+                "avg_utilization": float(avg_utilization),
+                "sample_size": len(output_vs_max_data),
+                "interpretation": "over-provisioned" if avg_utilization < 0.5 else "well-tuned" if avg_utilization < 0.8 else "near-limit"
+            }
+        
+        result = {
+            "metadata": {
+                "time_range": f"{start_time} to {end_time}",
+                "agent_name": agent_name or "all",
+                "model_name": model_name or "all",
+                "total_requests": len(df)
+            },
+            "correlations": correlations,
+            "scatter_data": scatter_data,
+            "summary": f"Analyzed {len(correlations)} config parameters. Temperature correlation: {correlations.get('temperature_vs_latency', {}).get('correlation', 'N/A')}"
+        }
+        
+        return json.dumps(result, cls=AnalysisEncoder)
+        
+    except Exception as e:
+        error_msg = f"Error in analyze_config_correlation: {str(e)}"
+        logging.error(error_msg)
+        return json.dumps({"error": error_msg})
+
+
+def get_config_outliers(
+    time_range: str = "24h",
+    threshold_efficiency: float = 0.3
+) -> str:
+    """
+    Identify requests with suboptimal generation config settings.
+    
+    Detects:
+    - Requests with maxOutputTokens much higher than actual output (wasteful)
+    - Queries with potentially inappropriate temperature settings
+    - Over-provisioned configurations
+    
+    Args:
+        time_range: Time range to analyze
+        threshold_efficiency: Minimum token efficiency ratio (default 0.3 = 30% utilization)
+        
+    Returns:
+        JSON string with config outliers and optimization recommendations
+    """
+    try:
+        time_range_dict = json.loads(parse_time_range(time_range))
+        start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
+        
+        where_clauses = [
+            f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
+            "T.full_request IS NOT NULL",
+            "T.full_response IS NOT NULL",
+            "JSON_VALUE(T.metadata.request_latency) IS NOT NULL",
+            "JSON_VALUE(T.full_request, '$.generationConfig.maxOutputTokens') IS NOT NULL"
+        ]
+        
+        where_clause = " AND ".join(where_clauses)
+        
+        tables = get_table_list()
+        
+        if len(tables) == 1:
+            query = f"""
+        SELECT
+          T.request_id,
+          COALESCE(JSON_VALUE(T.full_request.labels.adk_agent_name), 'unknown') AS agent_name,
+          CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000 AS latency,
+          SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.temperature') AS FLOAT64) AS temperature,
+          SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.maxOutputTokens') AS INT64) AS max_output_tokens,
+          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) AS output_tokens,
+          SAFE_DIVIDE(
+            SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64),
+            SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.maxOutputTokens') AS INT64)
+          ) AS token_efficiency
+        FROM
+          `{PROJECT_ID}.{DATASET_ID}.{tables[0]}` AS T
+        WHERE
+          {where_clause}
+          AND SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) IS NOT NULL
+        """
+        else:
+            table_selects = []
+            for table in tables:
+                table_select = f"""
+            SELECT
+              T.request_id,
+              COALESCE(JSON_VALUE(T.full_request.labels.adk_agent_name), 'unknown') AS agent_name,
+              CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000 AS latency,
+              SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.temperature') AS FLOAT64) AS temperature,
+              SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.maxOutputTokens') AS INT64) AS max_output_tokens,
+              SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) AS output_tokens,
+              SAFE_DIVIDE(
+                SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64),
+                SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.maxOutputTokens') AS INT64)
+              ) AS token_efficiency
+            FROM
+              `{PROJECT_ID}.{DATASET_ID}.{table}` AS T
+            WHERE
+              {where_clause}
+              AND SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) IS NOT NULL
+            """
+                table_selects.append(table_select)
+            
+            query = "\nUNION ALL\n".join(table_selects)
+        
+        df = execute_bigquery(query)
+        
+        if df.empty:
+            return json.dumps({
+                "error": "No data found with config information",
+                "metadata": {"time_range": f"{start_time} to {end_time}"}
+            })
+        
+        # Find outliers: low token efficiency (over-provisioned maxOutputTokens)
+        wasteful_configs = df[df['token_efficiency'] < threshold_efficiency].copy()
+        wasteful_configs['waste_tokens'] = wasteful_configs['max_output_tokens'] - wasteful_configs['output_tokens']
+        wasteful_configs.sort_values('waste_tokens', ascending=False, inplace=True)
+        
+        # Calculate potential savings
+        total_waste = wasteful_configs['waste_tokens'].sum()
+        avg_efficiency = df['token_efficiency'].mean()
+        
+        # Group by agent to find patterns
+        agent_efficiency = df.groupby('agent_name').agg({
+            'token_efficiency': 'mean',
+            'max_output_tokens': 'mean',
+            'output_tokens': 'mean'
+        }).reset_index()
+        agent_efficiency['recommended_max_tokens'] = (agent_efficiency['output_tokens'] * 1.5).round(0)  # 50% buffer
+        
+        outliers_list = []
+        for _, row in wasteful_configs.head(20).iterrows():
+            outlier = {
+                "request_id": row['request_id'],
+                "agent_name": row['agent_name'],
+                "latency": float(row['latency']),
+                "temperature": float(row['temperature']) if pd.notna(row['temperature']) else None,
+                "max_output_tokens_config": int(row['max_output_tokens']),
+                "actual_output_tokens": int(row['output_tokens']),
+                "token_efficiency": float(row['token_efficiency']),
+                "wasted_tokens": int(row['waste_tokens']),
+                "recommendation": f"Reduce maxOutputTokens from {int(row['max_output_tokens'])} to ~{int(row['output_tokens'] * 1.5)}"
+            }
+            outliers_list.append(outlier)
+        
+        agent_recommendations = []
+        for _, row in agent_efficiency.iterrows():
+            if row['token_efficiency'] < threshold_efficiency:
+                agent_rec = {
+                    "agent_name": row['agent_name'],
+                    "current_avg_max_tokens": int(row['max_output_tokens']),
+                    "actual_avg_output": int(row['output_tokens']),
+                    "efficiency": float(row['token_efficiency']),
+                    "recommended_max_tokens": int(row['recommended_max_tokens'])
+                }
+                agent_recommendations.append(agent_rec)
+        
+        result = {
+            "metadata": {
+                "time_range": f"{start_time} to {end_time}",
+                "total_requests": len(df),
+                "threshold_efficiency": threshold_efficiency
+            },
+            "summary": {
+                "wasteful_configs_count": len(wasteful_configs),
+                "wasteful_percentage": float(len(wasteful_configs) / len(df) * 100),
+                "total_wasted_tokens": int(total_waste),
+                "avg_token_efficiency": float(avg_efficiency)
+            },
+            "outliers": outliers_list,
+            "agent_recommendations": agent_recommendations,
+            "overall_recommendation": f"Found {len(wasteful_configs)} requests ({len(wasteful_configs)/len(df)*100:.1f}%) with <{threshold_efficiency*100}% token efficiency. Consider reducing maxOutputTokens for affected agents."
+        }
+        
+        return json.dumps(result, cls=AnalysisEncoder)
+        
+    except Exception as e:
+        error_msg = f"Error in get_config_outliers: {str(e)}"
+        logging.error(error_msg)
+        return json.dumps({"error": error_msg})
+

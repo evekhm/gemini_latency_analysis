@@ -119,6 +119,66 @@
             "concurrency": 5,
             "streaming": false,
             "agent_name": "direct"
+        },
+        "config_temp_low": {
+            "description": "Low temperature (0.0) with moderate token limit for deterministic outputs",
+            "prompt": "Explain the concept of machine learning in 200 words.",
+            "count": 20,
+            "concurrency": 3,
+            "streaming": false,
+            "agent_name": "config_test_low_temp",
+            "generation_config": {
+                "temperature": 0.0,
+                "max_output_tokens": 2048
+            }
+        },
+        "config_temp_medium": {
+            "description": "Medium temperature (0.5) with standard token limit for balanced creativity",
+            "prompt": "Write a creative short story about a robot learning to paint.",
+            "count": 20,
+            "concurrency": 3,
+            "streaming": false,
+            "agent_name": "config_test_medium_temp",
+            "generation_config": {
+                "temperature": 0.5,
+                "max_output_tokens": 4096
+            }
+        },
+        "config_temp_high": {
+            "description": "High temperature (1.0) with large token limit for maximum creativity",
+            "prompt": "Imagine and describe a futuristic city in detail.",
+            "count": 20,
+            "concurrency": 3,
+            "streaming": false,
+            "agent_name": "config_test_high_temp",
+            "generation_config": {
+                "temperature": 1.0,
+                "max_output_tokens": 8192
+            }
+        },
+        "config_tokens_conservative": {
+            "description": "Conservative maxOutputTokens (1024) to test over-provisioning detection",
+            "prompt": "What is the capital of France?",
+            "count": 30,
+            "concurrency": 5,
+            "streaming": false,
+            "agent_name": "config_test_conservative_tokens",
+            "generation_config": {
+                "temperature": 0.7,
+                "max_output_tokens": 1024
+            }
+        },
+        "config_tokens_generous": {
+            "description": "Very generous maxOutputTokens (16384) to test wasteful config detection",
+            "prompt": "Name three primary colors.",
+            "count": 30,
+            "concurrency": 5,
+            "streaming": false,
+            "agent_name": "config_test_generous_tokens",
+            "generation_config": {
+                "temperature": 0.7,
+                "max_output_tokens": 16384
+            }
         }
     }
 }

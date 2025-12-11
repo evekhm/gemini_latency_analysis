@@ -61,70 +61,99 @@ An AI-powered performance analytics platform that automatically analyzes LLM app
 Vertex AI can [log samples of requests and responses](https://cloud.google.com/vertex-ai/generative-ai/docs/multimodal/request-response-logging) for Gemini and supported partner models.
 The logs are saved to a BigQuery table for viewing and analysis.
 
+1. Specify PROJECT_ID in [.env](.env):
 
-Update environment variables in [.env](.env) file accordingly:
-```shell
-export PROJECT_ID="..."
-export MODEL="gemini-2.5-pro"  # Gemini Model for which configuration is applied. You will need to re-apply this step for each Gemini model being used, e.g. for flash, pro, etc. separately.
-export DATASET="logging"           # name of the dataset, configured for logging in BigQuery. Make sure to create such dataset first.
-export GEMINI_LOG_TABLE="2p5-pro"  # name of the table configured for logging in BigQuery. You want each MODEL to have its own table. The table will be created automatically.
-```
+    ```bash
+    export PROJECT_ID="..."
+    ```
 
-Load environment variables:
-```shell
-source .env
-```
+2. Load environment variables:
+    ```shell
+    source .env
+    ```
 
-Set active project:
-```shell
-gcloud config set project ${PROJECT_ID}
-```
+3. Set active project:
+    ```shell
+    gcloud config set project ${PROJECT_ID}
+    ```
 
-Authenticate::
-```shell
-gcloud auth login
-gcloud auth application-default login
-```
+4. Authenticate::
+    ```shell
+    gcloud auth login
+    gcloud auth application-default login
+    ```
 
-Enabled required APIs:
-```shell
-gcloud services enable aiplatform.googleapis.com --project="${PROJECT_ID}"
-```
+5. Enabled required APIs:
+    ```shell
+    gcloud services enable aiplatform.googleapis.com --project="${PROJECT_ID}"
+    ```
 
-**Create `request.json` file**
-```shell
-cat > request.json <<EOF
-{
-  "publisherModelConfig": {
-     "loggingConfig": {
-       "enabled": true,
-       "samplingRate": 1,
-       "bigqueryDestination": {
-         "outputUri": "bq://${PROJECT_ID}.${DATASET}.${GEMINI_LOG_TABLE}"
-       },
-       "enableOtelLogging": true
-     }
-   }
- }
-EOF
-```
+6. For each LLM Model you want to enable BQ logging for, follow the steps below.
 
-**Apply Remote configuration** 
-```shell
-curl -X POST \
--H "Authorization: Bearer $(gcloud auth print-access-token)" \
--H "Content-Type: application/json; charset=utf-8" \
--d @request.json \
-"https://$REGION-aiplatform.googleapis.com/v1beta1/projects/$PROJECT_ID/locations/$REGION/publishers/google/models/$MODEL:setPublisherModelConfig"
-```
+   - **Setup configuration for logging** (see [.env-2.5pro](.env-2.5pro))
+     ```bash
+       export MODEL_ID="gemini-2.5-pro"  # Gemini Model for which configuration is applied
+       export TABLE_ID="2p5-pro"         # name of the table to save logs into
+       export REGION="us-central1"  
+     ```
 
-Test applied configuration:
+   - **Create `request.json` file**
+      ```shell
+      cat > request.json <<EOF
+      {
+        "publisherModelConfig": {
+           "loggingConfig": {
+             "enabled": true,
+             "samplingRate": 1,
+             "bigqueryDestination": {
+               "outputUri": "bq://${PROJECT_ID}.${DATASET_ID}.${TABLE_ID}"
+             },
+             "enableOtelLogging": true
+           }
+         }
+       }
+      EOF
+      ```
 
-```shell
-curl -X GET \
--H "Authorization: Bearer $(gcloud auth print-access-token)" \
-"https://$REGION-aiplatform.googleapis.com/v1beta1/projects/$PROJECT_ID/locations/$REGION/publishers/google/models/$MODEL:fetchPublisherModelConfig"
-```
+   - **Apply Remote configuration**
+     ```shell
+     curl -X POST \
+     -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+     -H "Content-Type: application/json; charset=utf-8" \
+     -d @request.json \
+     "https://$REGION-aiplatform.googleapis.com/v1beta1/projects/$PROJECT_ID/locations/$REGION/publishers/google/models/${MODEL_ID}:setPublisherModelConfig"
+     ```
+
+   - **Test applied configuration**
+
+       ```shell
+       curl -X GET \
+       -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+       "https://$REGION-aiplatform.googleapis.com/v1beta1/projects/$PROJECT_ID/locations/$REGION/publishers/google/models/${MODEL_ID}:fetchPublisherModelConfig"
+       ```
+
+7. Setup Query Logging Table for Retrieval
+
+> **Model-Specific Configurations**: You can use separate existing `.env` files for different models (e.g., `.env-2.5pro`, `.env-2.5flash`).
+
+> [!NOTE]
+> **Multi-Table Support**: You can query multiple BigQuery tables simultaneously by providing a comma-separated list:
+> ```bash
+> export TABLE_ID="2p5-pro, 2p5-flash, 1p5-pro"
+> ```
+> When multiple tables are specified, the system automatically combines data from all tables using SQL UNION ALL operations.
+
+
+
+
+
+
+
+
+
+
+
+
 
 ### Install Libraries
 
@@ -176,15 +205,68 @@ Uses configurations setup in `load_scenarios.json` file.
 
 ### Usage
 
+**Using the Wrapper Script (Recommended):**
+
+For easy switching between different model configurations, use the `load_generator.sh` wrapper script:
+
+```shell
+# Run all scenarios with Gemini 2.5 Pro configuration (defaults to 'all' scenario)
+./load_generator.sh 2.5pro
+
+# Run all scenarios with Gemini 2.5 Flash configuration
+./load_generator.sh 2.5flash
+
+# Run specific scenario with custom model config
+./load_generator.sh 2.0flash thinking_vs_baseline
+
+# Run with count override
+./load_generator.sh 3pro all --count 5
+```
+
+The wrapper script automatically loads the corresponding `.env` file (e.g., `.env-2.5pro`, `.env-2.5flash`) which contains model-specific settings like `MODEL_ID`, generation config defaults, etc.
+
+**Direct Python Script Usage:**
+
 **Run All scenarios:**
 ```shell
 python load_generator.py all
+```
+
+**Run with specific .env file:**
+```shell
+python load_generator.py all --env-file .env-2.5pro
+python load_generator.py all --env-file .env-2.5flash
 ```
 
 **Run with direct client (bypass agent):**
 ```shell
 python3 load_generator.py direct_baseline
 ```
+
+**Test GenerationConfig variations:**
+```shell
+# Test low temperature (deterministic)
+python load_generator.py config_temp_low
+
+# Test medium temperature (balanced creativity)
+python load_generator.py config_temp_medium
+
+# Test high temperature (maximum creativity)
+python load_generator.py config_temp_high
+
+# Test conservative maxOutputTokens
+python load_generator.py config_tokens_conservative
+
+# Test generous maxOutputTokens (detect wasteful configs)
+python load_generator.py config_tokens_generous
+```
+
+The new config scenarios help you:
+- **Identify optimal temperature settings** for different use cases
+- **Detect wasteful maxOutputTokens** configurations 
+- **Compare latency impact** of different generation parameters
+- **Optimize token efficiency** by finding right-sized limits
+- **Test different models** by loading model-specific .env files
 
 ---
 
@@ -204,6 +286,8 @@ The `latency_analyzer` agent is a comprehensive AI-powered tool that automates l
 - **Cost Analysis**: Estimates token costs and identifies expensive query patterns.
 - **Individual Query Deep-Dive**: Fetches full details of specific slow queries for root cause analysis.
 - **Agent Comparison**: Compares performance across different agents (latency, volume, errors)
+- **Model Comparison**: Compares performance across different models (if multiple tables/models are configured)
+- **Generation Config Analysis**: Analyzes impact of temperature and maxOutputTokens on latency
 - **Per-Agent Breakdown**: Automatically analyzes performance per agent when running global analysis.
 
 ### Analysis Tools
@@ -234,6 +318,15 @@ The `latency_analyzer` agent is a comprehensive AI-powered tool that automates l
 - `detect_performance_degradation()` - Trend analysis over time
 - `get_cost_analysis()` - Token usage and cost breakdown
 - `compare_time_periods()` - Before/after comparison
+
+**GenerationConfig Analysis:**
+*   `get_generation_config_comparison()` - Compare latency across different temperature and maxOutputTokens settings
+*   `analyze_config_correlation()` - Analyze correlation between config parameters (temperature, maxOutputTokens, topK, topP) and latency
+*   `get_config_outliers()` - Identify wasteful configurations (e.g., maxOutputTokens >> actual output) with optimization recommendations
+
+**Model Analysis:**
+*   `get_model_comparison()` - Compare KPI metrics across different models (requires multiple tables/models in investigation)
+*   `get_agent_model_matrix()` - detailed breakdown of agent performance per model
 
 ### Usage
 
@@ -340,6 +433,12 @@ Then ask questions like:
 - "Find the most expensive agents by token usage"
 - "Has performance degraded over the last week?"
 - "Fetch the 10 slowest queries and analyze each one in detail"
+- "Compare latency across different temperature and maxOutputTokens settings"
+- "Which generationConfig combination gives the best latency performance?"
+- "Are we wasting tokens with over-provisioned maxOutputTokens?"
+- "Analyze correlation between temperature and latency"
+- "Compare performance between Gemini 1.5 Pro and 2.5 Pro"
+- "Which model gives the best latency for the 'search_tool' agent?"
 
 
 ---
@@ -462,8 +561,8 @@ if "error" in data:
 - **Cause:** No logs in BigQuery for the specified time range or filters
 - **Solution:** 
   - Verify logs are being written to BigQuery
-  - Check environment variables (PROJECT_ID, DATASET, GEMINI_LOG_TABLE)
-  - Verify the time range has data: `bq query "SELECT COUNT(*) FROM \`${PROJECT_ID}.${DATASET}.${GEMINI_LOG_TABLE}\`"`
+  - Check environment variables (PROJECT_ID, DATASET_ID, TABLE_ID)
+  - Verify the time range has data: `bq query "SELECT COUNT(*) FROM \`${PROJECT_ID}.${DATASET_ID}.${TABLE_ID}\`"`
 
 **Issue: "PROJECT_ID environment variable is not set"**
 - **Cause:** Environment variables not loaded
@@ -492,7 +591,7 @@ bq query --use_legacy_sql=false "
 SELECT COUNT(*) as total_requests,
        MIN(logging_time) as earliest,
        MAX(logging_time) as latest
-FROM \`${PROJECT_ID}.${DATASET}.${GEMINI_LOG_TABLE}\`
+FROM \`${PROJECT_ID}.${DATASET_ID}.${TABLE_ID}\`
 "
 ```
 
@@ -512,6 +611,19 @@ The agent should detect these errors and report them to you.
 ---
 
 ## Verification
+
+### Automated Tests
+
+Run the comprehensive test suite to verify all components:
+
+```shell
+# Run all tests
+python -m pytest tests/
+
+# Run specific test modules
+python -m pytest tests/test_model_analysis.py
+python -m pytest tests/test_kpi_compliance.py
+```
 
 To verify the agent's logic (using mocks), run the test script:
 

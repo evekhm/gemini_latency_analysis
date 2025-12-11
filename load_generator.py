@@ -13,7 +13,6 @@ from google.adk.models import LlmResponse
 from google.adk.sessions import InMemorySessionService
 
 __dir__ = os.path.dirname(__file__)
-load_dotenv(dotenv_path=os.path.join(__dir__, "../../.env"))
 
 # Configure logging
 logging.basicConfig(
@@ -21,34 +20,57 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
-# Load environment variables
-load_dotenv()
+def load_environment(env_file: str = None):
+    """Load environment variables from specified .env file or default."""
+    # Always load shared/parent .env file first for common credentials
+    shared_env_path = os.path.join(__dir__, ".env")
+    load_dotenv(dotenv_path=shared_env_path)
+    
+    if env_file:
+        env_path = os.path.join(__dir__, env_file)
+        logging.info(f"Loading environment from: {env_path}")
+        # Override with specific environment config
+        load_dotenv(dotenv_path=env_path, override=True)
+    
 
-PROJECT_ID = os.getenv("PROJECT_ID")
-LOCATION = os.getenv("LOCATION", "us-central1")
-MODEL_ID = os.getenv("MODEL")
+    PROJECT_ID = os.getenv("PROJECT_ID")
+    LOCATION = os.getenv("REGION", "us-central1")
+    MODEL_ID = os.getenv("MODEL_ID")
 
-assert PROJECT_ID, "PROJECT_ID is not set"
+    assert PROJECT_ID, "PROJECT_ID is not set"
+    
+    # ADK/GenAI SDK often looks for GOOGLE_CLOUD_PROJECT
+    if "GOOGLE_CLOUD_PROJECT" not in os.environ:
+        os.environ["GOOGLE_CLOUD_PROJECT"] = PROJECT_ID
+    if "GOOGLE_CLOUD_LOCATION" not in os.environ:
+        os.environ["GOOGLE_CLOUD_LOCATION"] = LOCATION
+    
+    assert MODEL_ID, "Model must be set!"
+    
+    return PROJECT_ID, LOCATION, MODEL_ID
 
-# ADK/GenAI SDK often looks for GOOGLE_CLOUD_PROJECT
-if "GOOGLE_CLOUD_PROJECT" not in os.environ:
-    os.environ["GOOGLE_CLOUD_PROJECT"] = PROJECT_ID
-if "GOOGLE_CLOUD_LOCATION" not in os.environ:
-    os.environ["GOOGLE_CLOUD_LOCATION"] = LOCATION
 
-assert MODEL_ID, "Model must be set!"
-
-def create_load_generator_agent(name: str, model: str = "gemini-2.0-flash-exp") -> LlmAgent:
+def create_load_generator_agent(name: str, model: str = "gemini-2.0-flash-exp", generation_config: dict = None) -> LlmAgent:
+    """Create agent with customizable generation config."""
+    config_params = {
+        "temperature": generation_config.get("temperature", 0.7) if generation_config else 0.7,
+        "max_output_tokens": generation_config.get("max_output_tokens", 8192) if generation_config else 8192,
+        "labels": {"adk_agent_name": name}
+    }
+    
+    # Add optional parameters if provided
+    if generation_config:
+        if "top_k" in generation_config:
+            config_params["top_k"] = generation_config["top_k"]
+        if "top_p" in generation_config:
+            config_params["top_p"] = generation_config["top_p"]
+    
     return LlmAgent(
         name=name,
         model=model,
         description="A simple load generator agent for latency analysis.",
         instruction="You are a helpful assistant. Respond to the user's prompt directly.",
-        generate_content_config=types.GenerateContentConfig(
-            temperature=0.7,
-            max_output_tokens=8192,
-            labels={"adk_agent_name": name} # Explicitly set label for BigQuery tracking
-        )
+        generate_content_config=types.GenerateContentConfig(**config_params)
     )
 
 def generate_large_prompt(token_count_approx: int) -> str:
@@ -57,7 +79,7 @@ def generate_large_prompt(token_count_approx: int) -> str:
     repeats = max(1, token_count_approx // 10)
     return base_phrase * repeats + "\n\nSummarize the above in one word."
 
-async def send_request(agent_name: str, prompt: str, max_output_tokens: int, label: str, streaming: bool = False):
+async def send_request(agent_name: str, prompt: str, max_output_tokens: int, label: str, streaming: bool = False, generation_config: dict = None):
     """Sends a single request using an ADK Agent and logs latency (TTFT and E2E)."""
     start_time = time.time()
     ttft = 0
@@ -80,15 +102,24 @@ async def send_request(agent_name: str, prompt: str, max_output_tokens: int, lab
         
         try:
             logging.info(f"[{label}] Sending request via Direct Client...")
+            
+            # Build config params
+            config_params = {
+                "temperature": generation_config.get("temperature", 0.7) if generation_config else 0.7,
+                "max_output_tokens": generation_config.get("max_output_tokens", max_output_tokens) if generation_config else max_output_tokens,
+                "labels": {"adk_agent_name": "direct_client"}
+            }
+            if generation_config:
+                if "top_k" in generation_config:
+                    config_params["top_k"] = generation_config["top_k"]
+                if "top_p" in generation_config:
+                    config_params["top_p"] = generation_config["top_p"]
+            
             if streaming:
                 async for chunk in await client.aio.models.generate_content_stream(
                     model=MODEL_ID,
                     contents=prompt,
-                    config=types.GenerateContentConfig(
-                        temperature=0.7,
-                        max_output_tokens=max_output_tokens,
-                        labels={"adk_agent_name": "direct_client"}
-                    )
+                    config=types.GenerateContentConfig(**config_params)
                 ):
                     if first_token_time is None:
                         first_token_time = time.time()
@@ -101,11 +132,7 @@ async def send_request(agent_name: str, prompt: str, max_output_tokens: int, lab
                 response = await client.aio.models.generate_content(
                     model=MODEL_ID,
                     contents=prompt,
-                    config=types.GenerateContentConfig(
-                        temperature=0.7,
-                        max_output_tokens=max_output_tokens,
-                        labels={"adk_agent_name": "direct_client"}
-                    )
+                    config=types.GenerateContentConfig(**config_params)
                 )
                 end_time = time.time()
                 e2e_latency = end_time - start_time
@@ -121,7 +148,7 @@ async def send_request(agent_name: str, prompt: str, max_output_tokens: int, lab
             return None, None
 
     # Create a fresh agent for this request
-    agent = create_load_generator_agent(name=agent_name, model=MODEL_ID)
+    agent = create_load_generator_agent(name=agent_name, model=MODEL_ID, generation_config=generation_config)
     
     # We need a Runner to execute the agent
     # Using InMemorySessionService for lightweight execution
@@ -183,6 +210,13 @@ async def run_scenario(name: str, config: dict, override_count: int = None, agen
     # Use the agent_name from config if available, otherwise default
     scenario_agent_name = config.get("agent_name", agent_name)
     
+    # Extract generation config from scenario
+    generation_config = config.get("generation_config", {})
+    if "temperature" in generation_config:
+        logging.info(f"Using temperature: {generation_config['temperature']}")
+    if "max_output_tokens" in generation_config:
+        logging.info(f"Using max_output_tokens: {generation_config['max_output_tokens']}")
+    
     logging.info(f"--- Starting Scenario: {name} (Agent: {scenario_agent_name}, {count} requests, concurrency={concurrency}) ---")
     logging.info(f"Description: {description}")
     
@@ -192,7 +226,8 @@ async def run_scenario(name: str, config: dict, override_count: int = None, agen
     else:
         prompt = config.get("prompt", "Hello")
         
-    max_output_tokens = config.get("max_output_tokens", 5000)
+    # Get max_output_tokens from generation_config first, then fall back to old location
+    max_output_tokens = generation_config.get("max_output_tokens", config.get("max_output_tokens", 5000))
     
     tasks = []
     latencies = []
@@ -200,7 +235,7 @@ async def run_scenario(name: str, config: dict, override_count: int = None, agen
     if concurrency > 1:
         # Concurrent execution
         for i in range(count):
-            tasks.append(send_request(scenario_agent_name, prompt, max_output_tokens, label=f"{name}-{i+1}", streaming=streaming))
+            tasks.append(send_request(scenario_agent_name, prompt, max_output_tokens, label=f"{name}-{i+1}", streaming=streaming, generation_config=generation_config))
         
         start_time = time.time()
         results = await asyncio.gather(*tasks)
@@ -211,7 +246,7 @@ async def run_scenario(name: str, config: dict, override_count: int = None, agen
     else:
         # Sequential execution
         for i in range(count):
-            lat, _ = await send_request(scenario_agent_name, prompt, max_output_tokens, label=f"{name}-{i+1}", streaming=streaming)
+            lat, _ = await send_request(scenario_agent_name, prompt, max_output_tokens, label=f"{name}-{i+1}", streaming=streaming, generation_config=generation_config)
             if lat: latencies.append(lat)
             
     if latencies:
@@ -227,13 +262,20 @@ async def send_hello_world(agent_name: str = "load_generator"):
         print(f"\nModel Answer: {text}\n")
 
 async def main():
-    print(f"Load Generator using Project ID: {PROJECT_ID}")
     parser = argparse.ArgumentParser(description="Load Generator for Latency Analysis")
     parser.add_argument("scenario", nargs="?", help="Scenario to run (key in load_scenarios.json) or 'all'")
     parser.add_argument("--count", type=int, default=None, help="Override number of requests")
     parser.add_argument("--config", default="load_scenarios.json", help="Path to config file")
     parser.add_argument("--agent-name", default="load_generator", help="Default agent name if not in config")
+    parser.add_argument("--env-file", default=None, help="Path to .env file to load (e.g., .env-2.5pro)")
     args = parser.parse_args()
+    
+    # Load environment from specified file or use defaults
+    global PROJECT_ID, LOCATION, MODEL_ID
+    PROJECT_ID, LOCATION, MODEL_ID = load_environment(args.env_file)
+    
+    print(f"Load Generator using Project ID: {PROJECT_ID}")
+    print(f"Using Model: {MODEL_ID}")
 
     if not PROJECT_ID:
         logging.error("PROJECT_ID environment variable not set.")

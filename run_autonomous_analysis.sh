@@ -29,11 +29,11 @@ if [ -f "${SCRIPT_DIR}/.env" ]; then
     source "${SCRIPT_DIR}/.env"
     set +a
     export GOOGLE_CLOUD_PROJECT=$PROJECT_ID
-    export GOOGLE_CLOUD_LOCATION=$REGION
+    export GOOGLE_CLOUD_LOCATION=$AGENT_REGION
     echo -e "${GREEN}  Project: $PROJECT_ID${NC}"
-    echo -e "${GREEN}  Region: $REGION${NC}"
-    echo -e "${GREEN}  Dataset: $DATASET${NC}"
-    echo -e "${GREEN}  Table: $GEMINI_LOG_TABLE${NC}"
+    echo -e "${GREEN}  Region: $AGENT_REGION${NC}"
+    echo -e "${GREEN}  Dataset: $DATASET_ID${NC}"
+    echo -e "${GREEN}  Table(s): $AGENT_TABLE_ID${NC}"
 else
     echo -e "${YELLOW}⚠ Warning: .env file not found. Make sure environment variables are set.${NC}"
 fi

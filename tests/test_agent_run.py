@@ -10,12 +10,14 @@ from google.adk.runners import InMemoryRunner
 from google.genai import types
 from dotenv import load_dotenv
 
-load_dotenv()
+from dotenv import load_dotenv
+__dir__ = os.path.dirname(__file__)
+load_dotenv(dotenv_path=os.path.join(__dir__, "../.env"))
 
 # Load configuration from .env
 PROJECT_ID = os.getenv("PROJECT_ID")
-REGION = os.getenv("REGION")
-MODEL = os.getenv("MODEL", "gemini-2.0-flash")
+REGION = os.getenv("AGENT_REGION")
+MODEL_ID = os.getenv("AGENT_MODEL_ID")
 
 # Set Google SDK environment variables from .env values
 # The SDK expects these specific variable names
@@ -40,13 +42,13 @@ async def test_agent():
     app_name = "test_agent_app"
     user_id = "test_user"
     
-    print(f"Testing agent with model: {MODEL}")
+    print(f"Testing agent with model: {MODEL_ID}")
     print(f"Using project: {PROJECT_ID}, region: {REGION}")
     
     # 2. Define the agent
     agent = Agent(
         name="test_agent",
-        model=MODEL,  # Use MODEL from .env
+        model=MODEL_ID,  # Use MODEL from .env
         instruction="You are a helpful assistant. Reply with 'Hello' when greeted."
     )
     

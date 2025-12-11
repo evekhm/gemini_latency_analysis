@@ -6,3 +6,4 @@
 /reports**/
 
 /PROMPTS.md
+/agents/parallel_latency_analyzer/__pycache__/

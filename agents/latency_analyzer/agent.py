@@ -10,6 +10,8 @@ from .utils import (
     get_latency_distribution,
     get_hourly_patterns,
     get_agent_comparison,
+    get_model_comparison,      # Model performance comparison
+    get_agent_model_matrix,    # Agent × Model matrix analysis
     get_token_correlation,
     get_outlier_analysis,
     get_slowest_queries,
@@ -38,18 +40,22 @@ from .utils import (
     parse_time_range,  # Tool to parse date strings
     analyze_thinking_overhead,
     detect_compute_inefficiency,
+    # GenerationConfig analysis tools
+    get_generation_config_comparison,
+    analyze_config_correlation,
+    get_config_outliers,
 )
 
 __dir__ = os.path.dirname(__file__)
 load_dotenv(dotenv_path=os.path.join(__dir__, "../../.env"))
 
 # Get the model from environment variable
-MODEL = os.getenv('MODEL')
+MODEL_ID = os.getenv('AGENT_MODEL_ID')
 
 # Latency Analyzer Agent with all analysis tools (merged with slow_query_analyzer)
 latency_analyzer = LlmAgent(
     name="latency_analyzer",
-    model=MODEL,
+    model=MODEL_ID,
     description="Comprehensive LLM latency and performance analyzer. Analyzes BigQuery logs, identifies bottlenecks, detects patterns, provides actionable optimization recommendations, and performs deep-dive analysis of individual slow queries.",
     instruction=PROMPT_LATENCY_ANALYZER,
     tools=[
@@ -58,6 +64,8 @@ latency_analyzer = LlmAgent(
         get_latency_distribution,
         get_hourly_patterns,
         get_agent_comparison,
+        get_model_comparison,       # Compare performance across models
+        get_agent_model_matrix,     # Agent × Model performance matrix
         # Correlation & patterns
         get_token_correlation,
         analyze_correlation_detailed,  # Enhanced correlation with output+thought
@@ -87,6 +95,10 @@ latency_analyzer = LlmAgent(
         parse_time_range,       # Parse date strings
         analyze_thinking_overhead, # Detect thinking overhead
         detect_compute_inefficiency, # Detect compute bottlenecks
+        # GenerationConfig analysis
+        get_generation_config_comparison,  # Compare latency across config settings
+        analyze_config_correlation,        # Correlate config params with latency
+        get_config_outliers,               # Find wasteful config settings
     ],
     generate_content_config=types.GenerateContentConfig(
         temperature=0,

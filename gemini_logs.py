@@ -22,8 +22,8 @@ SCRIPT_VERSION = "1.1.0"  # Added visualization improvements and version trackin
 
 # --- USER INPUT SECTION ---
 # BigQuery dataset and table IDs
-dataset_id = os.getenv("DATASET", "MY_DATASET")
-gemini_table_id = os.getenv("GEMINI_LOG_TABLE", "gemini_flash_logs")
+dataset_id = os.getenv("DATASET_ID", "MY_DATASET")
+gemini_table_id = os.getenv("TABLE_ID", "gemini_flash_logs")
 project_id = os.getenv("PROJECT_ID")
 # --- END USER INPUT SECTION ---
 

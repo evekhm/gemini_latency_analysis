@@ -6,7 +6,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Source environment variables from .env file
-# Ensure this file contains PROJECT_ID and MODEL
+# Ensure this file contains PROJECT_ID and MODEL_ID
 ENV_FILE="${SCRIPT_DIR}/.env"
 if [ -f "${ENV_FILE}" ]; then
     source "${ENV_FILE}"
@@ -22,14 +22,14 @@ if [ -z "$PROJECT_ID" ]; then
   exit 1
 fi
 
-echo "Querying BigQuery table for model: $MODEL"
+echo "Querying BigQuery"
 echo "Project: $PROJECT_ID"
-echo "Dataset: $DATASET"
-echo "Table: $GEMINI_LOG_TABLE"
+echo "Dataset: $DATASET_ID"
+echo "Table: $TABLE_ID"
 echo "---"
 
 # Construct the fully qualified table name for the query
-TABLE_ID="${PROJECT_ID}.${DATASET}.${GEMINI_LOG_TABLE}"
+TABLE_ID="${PROJECT_ID}.${DATASET_ID}.${TABLE_ID}"
 
 # Run the BigQuery query
 # The condition "AND JSON_VALUE(T.full_request.labels.adk_agent_name) IS NOT NULL" has been removed.
