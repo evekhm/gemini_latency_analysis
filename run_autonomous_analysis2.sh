@@ -62,9 +62,9 @@ echo ""
 echo -e "${GREEN}Starting autonomous analysis...${NC}"
 echo ""
 
-# Run the agent with replay
-cd "$SCRIPT_DIR/agents"
-../.venv/bin/adk run --replay ../$REPLAY_FILE parallel_latency_analyzer
+# Run the agent with caching enabled (replaces adk run)
+echo -e "${GREEN}Running with ADK Context Caching enabled...${NC}"
+"$SCRIPT_DIR/.venv/bin/python" "$SCRIPT_DIR/run_with_caching.py" "$SCRIPT_DIR/$REPLAY_FILE"
 
 echo ""
 echo -e "${GREEN}========================================${NC}"

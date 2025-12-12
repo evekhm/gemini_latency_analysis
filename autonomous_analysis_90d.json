@@ -5,7 +5,17 @@
         "analysis_scope": "autonomous",
         "kpis": {
             "mean_latency_target": 3.0,
-            "p95_latency_target": 5.0
+            "p95_latency_target": 5.0,
+            "per_agent": {
+                "latency_analyzer": {
+                    "mean_latency_target": 120.0,
+                    "p95_latency_target": 200.0
+                },
+              "final_report_assembler": {
+                "mean_latency_target": 120.0,
+                "p95_latency_target": 200.0
+              }
+            }
         },
         "num_slowest_queries": 20,
         "agent_name": null

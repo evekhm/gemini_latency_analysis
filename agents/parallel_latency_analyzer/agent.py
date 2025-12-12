@@ -1,4 +1,3 @@
-# agent.py
 import logging
 import os
 from collections.abc import AsyncGenerator
@@ -51,17 +50,27 @@ from .utils import (
     get_generation_config_comparison,
     analyze_config_correlation,
     get_config_outliers,
-    get_analysis_config
+    get_analysis_config,
+    get_hourly_model_distribution,
+    get_hourly_model_latency_heatmap,
+    # Individual query analysis tools
+    fetch_slow_queries,
+    fetch_single_query,
+    fetch_slow_queries_batch,
+    fetch_fastest_queries,
+    # Time period comparison
+    compare_time_periods
 )
 
+
 from .prompts import (
-    PROMPT_ROOT_AGENT,
-    PROMPT_STRATEGIST,
-    PROMPT_INVESTIGATOR,
-    PROMPT_CRITIQUE,
-    PROMPT_SECTION_WRITER,
-    PROMPT_FINAL_REPORT_ASSEMBLER,
-    PROMPT_CATEGORY_PROCESSOR
+    ROOT_AGENT_PROMPT,
+    STRATEGIST_PROMPT,
+    INVESTIGATOR_PROMPT,
+    CRITIQUE_PROMPT,
+    SECTION_WRITER_PROMPT,
+    FINAL_REPORT_ASSEMBLER_PROMPT,
+    CATEGORY_PROCESSOR_PROMPT
 )
 
 load_dotenv()
@@ -69,14 +78,27 @@ load_dotenv()
 cloud_logging_client = google.cloud.logging.Client()
 cloud_logging_client.setup_logging()
 
-MODEL = os.getenv('AGENT_MODEL_ID') or os.getenv('MODEL')
+from google.adk.models.google_llm import Gemini
+
+MODEL_ID = os.getenv('AGENT_MODEL_ID') or os.getenv('MODEL')
 # Fallback if neither is set
-if not MODEL:
-    MODEL = "gemini-1.5-pro-002"
+if not MODEL_ID:
+    MODEL_ID = "gemini-1.5-pro-002"
+
+MODEL = Gemini(
+    model=MODEL_ID,
+    retry_options=types.HttpRetryOptions(
+        initial_delay=1.0,
+        attempts=10,
+        exp_base=2.0,
+        jitter=1.0,
+        http_status_codes=[429, 500, 503, 504]
+    )
+)
 
 CONTENT_CONFIG = types.GenerateContentConfig(
     temperature=0.0, # More deterministic output
-    max_output_tokens=8192,
+    max_output_tokens=65536,
 )
 
 # =========================================
@@ -140,13 +162,13 @@ def build_dimension_team(dimension_name: str) -> SequentialAgent:
         name=f"strategist_{safe_name}",
         model=MODEL,
         description="Generates specific analysis questions",
-        instruction=PROMPT_STRATEGIST,
+        instruction=STRATEGIST_PROMPT,
         generate_content_config=CONTENT_CONFIG,
         output_key=KEY_STRAT_OUTPUT
     )
 
     # 3. Investigator
-    investigator_instruction = PROMPT_INVESTIGATOR + f"\nYour input is QUESTIONS = [{{ {KEY_STRAT_OUTPUT} ? }}]\nCRITIQUE_FEEDBACK =[ {{ {KEY_FEEDBACK} ? }}]."
+    investigator_instruction = INVESTIGATOR_PROMPT + f"\nYour input is QUESTIONS = [{{ {KEY_STRAT_OUTPUT} ? }}]\nCRITIQUE_FEEDBACK = [{{ {KEY_FEEDBACK} ? }}]."
     
     investigator = LlmAgent(
         name=f"investigator_{safe_name}",
@@ -154,33 +176,52 @@ def build_dimension_team(dimension_name: str) -> SequentialAgent:
         description="Executes tools to gather data",
         instruction=investigator_instruction,
         tools=[
+            # Core statistics
             get_overall_statistics,
             get_latency_distribution,
             get_hourly_patterns,
             get_daily_patterns,
             get_agent_comparison,
+            get_model_comparison,
+            get_agent_model_matrix,
+            # Correlation & patterns
             get_token_correlation,
+            analyze_correlation_detailed,
             get_outlier_analysis,
             get_slowest_queries,
+            cluster_slow_queries,
             get_concurrent_request_impact,
+            # Advanced analysis
             detect_performance_degradation,
             get_cost_analysis,
-            cluster_slow_queries,
-            analyze_correlation_detailed,
+            compare_time_periods,
+            # Individual query analysis
+            get_query_details,
+            get_request_details,
+            fetch_slow_queries,
+            fetch_single_query,
+            fetch_slow_queries_batch,
+            fetch_fastest_queries,
+            # TPOT & KPI
             get_token_velocity,
             analyze_request_queuing,
             check_kpi_compliance,
             analyze_thinking_overhead,
             detect_compute_inefficiency,
-            get_model_comparison,
-            get_agent_model_matrix,
+            # GenerationConfig analysis
             get_generation_config_comparison,
             analyze_config_correlation,
             get_config_outliers,
-            get_analysis_config
+            # Hourly model analysis
+            get_hourly_model_distribution,
+            get_hourly_model_latency_heatmap,
+            # Configuration
+            get_analysis_config,
+            get_analysis_metadata
         ],
         generate_content_config=CONTENT_CONFIG,
-        output_key=KEY_DOC_OUTPUT
+        output_key=KEY_DOC_OUTPUT,
+        after_model_callback=accumulate_investigator_output
     )
 
     # 4. Critique
@@ -188,7 +229,8 @@ def build_dimension_team(dimension_name: str) -> SequentialAgent:
         name=f"critique_{safe_name}",
         model=MODEL,
         description="Hostile reviewer of findings",
-        instruction=PROMPT_CRITIQUE + f"\nYour Input is '{{ {KEY_DOC_OUTPUT} ? }}'",
+        instruction=CRITIQUE_PROMPT + f"\nYour Input is '{{ {KEY_DOC_OUTPUT} ? }}'",
+        tools=[get_analysis_metadata],
         output_schema=InvestigationFeedback,
         disallow_transfer_to_parent=True,
         disallow_transfer_to_peers=True,
@@ -200,7 +242,7 @@ def build_dimension_team(dimension_name: str) -> SequentialAgent:
 
     loop = LoopAgent(
         name=f"loop_{safe_name}",
-        max_iterations=5,
+        max_iterations=3,
         sub_agents=[investigator, critique, escalator]
     )
 
@@ -209,7 +251,7 @@ def build_dimension_team(dimension_name: str) -> SequentialAgent:
         name=f"writer_{safe_name}",
         model=MODEL,
         description="Writes final section markdown",
-        instruction=PROMPT_SECTION_WRITER + f"\nInput: Findings from {{ {KEY_DOC_OUTPUT} ? }}",
+        instruction=SECTION_WRITER_PROMPT + f"\nInput: Findings from {{ {KEY_DOC_OUTPUT} ? }}",
         generate_content_config=CONTENT_CONFIG,
         output_key=KEY_FINAL_SECTION
     )
@@ -227,7 +269,7 @@ final_report_assembler = LlmAgent(
     name="final_report_assembler",
     model=MODEL,
     description="Combines all individual report sections into the final master document.",
-    instruction=PROMPT_FINAL_REPORT_ASSEMBLER,
+    instruction=FINAL_REPORT_ASSEMBLER_PROMPT,
     generate_content_config=CONTENT_CONFIG,
     tools=[get_analysis_metadata],
     output_key="FINAL_REPORT_MARKDOWN"
@@ -253,7 +295,7 @@ parallel_latency_analyzer = LlmAgent(
     name="parallel_latency_analyzer",
     model=MODEL,
     description="Advanced Latency Consultant. Can run parallel deep-dive analysis across multiple dimensions.",
-    instruction=PROMPT_ROOT_AGENT,
+    instruction=ROOT_AGENT_PROMPT,
     generate_content_config=types.GenerateContentConfig(temperature=0),
     tools=[
         trigger_latency_parallel_report, 

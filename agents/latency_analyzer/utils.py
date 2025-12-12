@@ -15,8 +15,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 PROJECT_ID = os.getenv('PROJECT_ID')
-DATASET_ID = os.getenv('DATASET_ID')
-TABLE_ID = os.getenv('AGENT_TABLE_ID') or 'gemini_logs'
+DATASET_ID = os.getenv('DATASET_ID') or os.getenv("DATASET")
+TABLE_ID = os.getenv('AGENT_TABLE_ID') or os.getenv('GEMINI_LOG_TABLE')
 
 assert PROJECT_ID, "PROJECT_ID environment variable not set"
 assert DATASET_ID, "DATASET_ID environment variable not set"

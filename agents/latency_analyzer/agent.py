@@ -50,7 +50,7 @@ __dir__ = os.path.dirname(__file__)
 load_dotenv(dotenv_path=os.path.join(__dir__, "../../.env"))
 
 # Get the model from environment variable
-MODEL_ID = os.getenv('AGENT_MODEL_ID')
+MODEL_ID = os.getenv('AGENT_MODEL_ID') or os.getenv('MODEL')
 
 # Latency Analyzer Agent with all analysis tools (merged with slow_query_analyzer)
 latency_analyzer = LlmAgent(

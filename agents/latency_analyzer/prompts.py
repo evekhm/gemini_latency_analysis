@@ -130,7 +130,7 @@ You have access to comprehensive analysis tools:
     5. **YOU MUST** inform the user of the saved report location by saying something like:
        "Report saved to: [filename from the response]"
   - **Filename Convention**: Use descriptive names that match the analysis type:
-    - For autonomous analysis: "autonomous_latency_analysis_report" (DO NOT use "unified_" or "thorough_")
+    - Use: "latency_analysis_report"
  -  **Benefit**: Creates a timestamped file in the reports/ directory for easy sharing
   
   - **CRITICAL REQUIREMENT**: ALL reports MUST start with a metadata header section:

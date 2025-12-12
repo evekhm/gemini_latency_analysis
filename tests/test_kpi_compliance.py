@@ -1,62 +1,93 @@
 
 import unittest
+from unittest.mock import patch, MagicMock
 import json
-import logging
 import sys
 import os
-from unittest.mock import patch, MagicMock
 
-# Add the project root to python path to allow imports
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
+# Add updated path to sys.path to find utils
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../agents/parallel_latency_analyzer')))
 
-from agents.latency_analyzer.utils import check_kpi_compliance
+import utils
 
 class TestKPICompliance(unittest.TestCase):
-    @patch('agents.latency_analyzer.utils.get_analysis_config')
-    @patch('agents.latency_analyzer.utils.get_overall_statistics')
-    @patch('agents.latency_analyzer.utils.get_agent_comparison')
-    def test_check_kpi_compliance_per_agent(self, mock_get_agent_comparison, mock_get_overall_stats, mock_get_config):
-        # Setup mocks
-        mock_get_config.return_value = json.dumps({
-            "kpis": {"mean_latency_target": 3.0, "p95_latency_target": 5.0},
-            "agent_name": None
+
+    @patch('utils.get_analysis_config')
+    @patch('utils.get_overall_statistics')
+    @patch('utils.get_agent_comparison')
+    @patch('utils.parse_time_range')
+    def test_per_agent_compliance(self, mock_parse_time, mock_agent_comparison, mock_overall_stats, mock_config):
+        # Mock Config
+        mock_config.return_value = json.dumps({
+            "kpis": {
+                "mean_latency_target": 2.0,
+                "p95_latency_target": 4.0,
+                "per_agent": {
+                    "slow_agent": {
+                        "mean_latency_target": 5.0, # looser target
+                        "p95_latency_target": 10.0
+                    }
+                }
+            }
         })
         
-        # Mock global stats
-        mock_get_overall_stats.return_value = json.dumps({
-            "latency": {"mean": 10.0, "p95": 20.0}
+        # Mock Overall Stats
+        mock_overall_stats.return_value = json.dumps({
+            "latency": {
+                "mean": 1.5,
+                "p95": 3.5
+            },
+            "metadata": {"time_range": "24h"}
         })
-        
-        # Mock per-agent stats
-        mock_get_agent_comparison.return_value = json.dumps({
+
+        # Mock Agent Comparison
+        mock_agent_comparison.return_value = json.dumps({
             "agents": [
-                {"agent_name": "fast_agent", "avg_latency": 1.0, "p95_latency": 2.0},
-                {"agent_name": "slow_agent", "avg_latency": 10.0, "p95_latency": 20.0}
+                {
+                    "agent_name": "fast_agent",
+                    "avg_latency": 1.0,
+                    "p95_latency": 3.0
+                },
+                {
+                    "agent_name": "slow_agent",
+                    "avg_latency": 4.5, # Should pass custom target (5.0) but fail global (2.0)
+                    "p95_latency": 9.0  # Should pass custom target (10.0) but fail global (4.0)
+                },
+                {
+                    "agent_name": "failing_agent",
+                    "avg_latency": 3.0, # Fails global (2.0)
+                    "p95_latency": 5.0  # Fails global (4.0)
+                }
             ]
         })
         
-        # Call the function
-        result_json = check_kpi_compliance(time_range="24h")
+        # Run function
+        result_json = utils.check_kpi_compliance()
         result = json.loads(result_json)
         
-        # Verify structure
-        self.assertIn("per_agent_compliance", result)
-        self.assertEqual(len(result["per_agent_compliance"]), 2)
+        # Verify Global Compliance
+        self.assertEqual(result['compliance']['overall_status'], 'PASS') # 1.5 < 2.0 and 3.5 < 4.0
         
-        # Verify fast agent
-        fast_agent = next(a for a in result["per_agent_compliance"] if a["agent_name"] == "fast_agent")
-        self.assertEqual(fast_agent["status"], "PASS")
-        self.assertEqual(fast_agent["mean_status"], "PASS")
-        self.assertEqual(fast_agent["p95_status"], "PASS")
+        # Verify Per-Agent Compliance
+        per_agent = result.get('per_agent_compliance', [])
+        self.assertEqual(len(per_agent), 3)
         
-        # Verify slow agent
-        slow_agent = next(a for a in result["per_agent_compliance"] if a["agent_name"] == "slow_agent")
-        self.assertEqual(slow_agent["status"], "FAIL")
-        self.assertEqual(slow_agent["mean_status"], "FAIL")
-        self.assertEqual(slow_agent["p95_status"], "FAIL")
+        # Fast Agent
+        fast = next(a for a in per_agent if a['agent_name'] == 'fast_agent')
+        self.assertEqual(fast['overall_status'], 'pass')
+        self.assertEqual(fast['mean_latency']['target'], 2.0) # Global default
         
-        print("Test passed: per_agent_compliance field exists and has correct values.")
+        # Slow Agent (Custom Settings)
+        slow = next(a for a in per_agent if a['agent_name'] == 'slow_agent')
+        self.assertEqual(slow['overall_status'], 'pass')
+        self.assertEqual(slow['mean_latency']['target'], 5.0) # Custom override
+        self.assertEqual(slow['mean_latency']['status'], 'pass') # 4.5 < 5.0
+        
+        # Failing Agent
+        fail = next(a for a in per_agent if a['agent_name'] == 'failing_agent')
+        self.assertEqual(fail['overall_status'], 'fail')
+        self.assertEqual(fail['mean_latency']['target'], 2.0)
+        self.assertEqual(fail['mean_latency']['status'], 'fail') # 3.0 > 2.0
 
 if __name__ == '__main__':
-    logging.basicConfig(level=logging.INFO)
     unittest.main()
