@@ -70,7 +70,7 @@ from .prompts import (
     CRITIQUE_PROMPT,
     SECTION_WRITER_PROMPT,
     FINAL_REPORT_ASSEMBLER_PROMPT,
-    CATEGORY_PROCESSOR_PROMPT
+    REPORT_SAVER_PROMPT
 )
 
 load_dotenv()
@@ -275,6 +275,15 @@ final_report_assembler = LlmAgent(
     output_key="FINAL_REPORT_MARKDOWN"
 )
 
+report_saver = LlmAgent(
+    name="report_saver",
+    model=MODEL,
+    description="Saves the generated report to a timestamped file.",
+    instruction=REPORT_SAVER_PROMPT,
+    generate_content_config=types.GenerateContentConfig(temperature=0),
+    tools=[save_analysis_report]
+)
+
 # Parallel Execution Engine
 complete_report_generator = SequentialAgent(
     name="complete_report_generator",
@@ -288,6 +297,16 @@ complete_report_generator = SequentialAgent(
         # GATHER: Combine results
         final_report_assembler
     ],
+)
+
+# Wrapper that handles the entire Generate -> Save flow
+report_orchestrator = SequentialAgent(
+    name="report_orchestrator",
+    description="Orchestrator that generates the report and then automatically saves it.",
+    sub_agents=[
+        complete_report_generator,
+        report_saver
+    ]
 )
 
 # Root Entry Point
@@ -307,7 +326,7 @@ parallel_latency_analyzer = LlmAgent(
         get_query_details,
         get_request_details
     ],
-    sub_agents=[complete_report_generator],
+    sub_agents=[report_orchestrator],
 )
 
 root_agent = parallel_latency_analyzer

@@ -25,7 +25,8 @@ agents_dir = Path(__file__).parent / "agents"
 sys.path.insert(0, str(agents_dir))
 
 # Import the agent
-from parallel_latency_analyzer.agent import parallel_latency_analyzer
+# Import moved to inside run_autonomous_analysis to allow logger setup first
+# from parallel_latency_analyzer.agent import parallel_latency_analyzer
 
 # Load environment variables
 load_dotenv()
@@ -101,6 +102,7 @@ async def run_autonomous_analysis(replay_file_path: str = None):
     print()
     
     # Create App with context caching
+    from parallel_latency_analyzer.agent import parallel_latency_analyzer
     app = App(
         name=APP_NAME,
         root_agent=parallel_latency_analyzer,
@@ -171,6 +173,49 @@ def main():
     """Main entry point."""
     # Setup logging
     logs.setup_adk_logger(logging.INFO)
+    
+    # Manual Logger Setup to ensure file creation
+    try:
+        import tempfile
+        from datetime import datetime
+        
+        # Create log directory
+        log_dir = Path(tempfile.gettempdir()) / "agents_log"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Generate timestamped filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_file = log_dir / f"agent.{timestamp}.log"
+        
+        # Create FileHandler
+        file_handler = logging.FileHandler(log_file)
+        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s')
+        file_handler.setFormatter(formatter)
+        
+        # Attach to root logger
+        root_logger = logging.getLogger()
+        root_logger.addHandler(file_handler)
+        
+        # Also attach to 'adk' and 'google' loggers to be safe
+        logging.getLogger('adk').addHandler(file_handler)
+        logging.getLogger('google').addHandler(file_handler)
+        
+        print(f"✓ Created log file: {log_file}")
+        
+        if log_file:
+            symlink_path = Path("latest_agent.log")
+            
+            # Remove existing symlink or file
+            if symlink_path.exists() or symlink_path.is_symlink():
+                symlink_path.unlink()
+            
+            # Create new symlink
+            symlink_path.symlink_to(log_file)
+            print(f"✓ Created symlink: latest_agent.log -> {log_file}")
+            print(f"  Tip: Run 'tail -f latest_agent.log' to monitor agent progress")
+             
+    except Exception as e:
+        print(f"⚠️ Warning: Failed to setup manual logging: {e}")
     
     # Parse args (simple manual check for now or just hardcode the expected path)
     # The shell script is expected to direct us or we default relative

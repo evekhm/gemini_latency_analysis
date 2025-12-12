@@ -11,7 +11,7 @@ import pandas as pd
 import numpy as np
 from google.cloud import bigquery
 from google.api_core.exceptions import GoogleAPICallError
-from .query_extractor import extract_user_query
+
 from dotenv import load_dotenv
 from google.adk.tools.tool_context import ToolContext
 from google.adk.agents.callback_context import CallbackContext
@@ -36,6 +36,30 @@ assert TABLE_ID, "TABLE_ID environment variable not set"
 AGENT_VERSION = "0.0.1"
 
 print(f"Agent version: {AGENT_VERSION}, TABLE_ID: {TABLE_ID}, PROJECT_ID: {PROJECT_ID}, DATASET_ID: {DATASET_ID}")
+
+# =========================================
+# LATENCY DIMENSIONS
+# =========================================
+# Recommended 5 dimensions for comprehensive analysis while staying under token limit
+CURRENT_DIMENSION_LIST = [
+    "KPI Compliance & Overall Statistics",      # H2: Agent-specific issues (baseline)
+    "Model & Agent Performance Comparison",     # H9: Model-specific issues (critical)
+    "Token Usage & Correlation",                # H1: Token correlation + H7: Thinking overhead
+    "Slow Query Deep Dive",                     # H5: Outliers + H8: Anomalous inefficiency
+    "Cost & Efficiency Analysis",               # H10: Config impact (token efficiency, not $)
+]
+
+# Full dimension list (for reference, can be enabled selectively)
+FULL_DIMENSION_LIST = [
+    "KPI Compliance & Overall Statistics",
+    "Hourly & Daily Patterns",
+    "Token Usage & Correlation",
+    "Micro-Burst & Queuing Analysis",
+    "Model & Agent Performance Comparison",
+    "Slow Query Deep Dive",
+    "Cost & Efficiency Analysis"
+]
+
 
 # =========================================
 # BIGQUERY CLIENT & CACHING OPTIMIZATION
@@ -65,29 +89,6 @@ def _get_cache_path(query: str, timeout: int) -> str:
     query_hash = hashlib.md5(content.encode()).hexdigest()
     return os.path.join(CACHE_DIR, f"{query_hash}.json")
 
-
-# =========================================
-# LATENCY DIMENSIONS 
-# =========================================
-# Recommended 5 dimensions for comprehensive analysis while staying under token limit
-CURRENT_DIMENSION_LIST = [
-    "KPI Compliance & Overall Statistics",      # H2: Agent-specific issues (baseline)
-    "Model & Agent Performance Comparison",     # H9: Model-specific issues (critical)
-    "Token Usage & Correlation",                # H1: Token correlation + H7: Thinking overhead
-    "Slow Query Deep Dive",                     # H5: Outliers + H8: Anomalous inefficiency
-    "Cost & Efficiency Analysis",               # H10: Config impact (token efficiency, not $)
-]
-
-# Full dimension list (for reference, can be enabled selectively)
-FULL_DIMENSION_LIST = [
-    "KPI Compliance & Overall Statistics",
-    "Hourly & Daily Patterns",
-    "Token Usage & Correlation",
-    "Micro-Burst & Queuing Analysis",
-    "Model & Agent Performance Comparison",
-    "Slow Query Deep Dive",
-    "Cost & Efficiency Analysis"
-]
 
 
 
@@ -181,7 +182,7 @@ def parse_time_range(time_range: str) -> str:
     - "2 september" (natural language)
     - Ranges: "start to end", "from start to end"
     """
-    logging.info(f"Tool Call: parse_time_range(time_range='{time_range}')")
+    logging.info(f"[TOOL CALL-parse_time_range] parse_time_range(time_range='{time_range}')")
     from dateutil import parser
     from dateutil.relativedelta import relativedelta
     
@@ -300,7 +301,7 @@ def get_analysis_metadata() -> str:
     Returns:
         JSON string with project_id, dataset, table, and analyzer version
     """
-    logging.info("Tool Call: get_analysis_metadata()")
+    logging.info("[TOOL CALL-get_analysis_metadata] get_analysis_metadata()")
     from datetime import datetime
     
     tables = get_table_list()
@@ -328,7 +329,7 @@ def verify_data_access() -> str:
     Returns:
         JSON string with configuration details and test query result
     """
-    logging.info("Tool Call: verify_data_access()")
+    logging.info("[TOOL CALL-verify_data_access] verify_data_access()")
     tables = get_table_list()
     config = {
         "project_id": PROJECT_ID,
@@ -523,7 +524,7 @@ def get_overall_statistics(
     Returns:
         JSON string with overall statistics including all percentiles
     """
-    logging.info(f"Tool Call: get_overall_statistics(time_range='{time_range}', model_name='{model_name}', agent_name='{agent_name}')")
+    logging.info(f"[TOOL CALL-get_overall_statistics] get_overall_statistics(time_range='{time_range}', model_name='{model_name}', agent_name='{agent_name}')")
     try:
         time_range_dict = json.loads(parse_time_range(time_range))
         start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
@@ -677,7 +678,7 @@ def get_latency_distribution(
     
     Returns histogram data showing how many requests fall into each latency category.
     """
-    logging.info(f"Tool Call: get_latency_distribution(time_range='{time_range}', model_name='{model_name}', agent_name='{agent_name}')")
+    logging.info(f"[TOOL CALL-get_latency_distribution] get_latency_distribution(time_range='{time_range}', model_name='{model_name}', agent_name='{agent_name}')")
     try:
         time_range_dict = json.loads(parse_time_range(time_range))
         start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
@@ -826,7 +827,7 @@ def get_hourly_patterns(
     
     Returns hourly averages, request counts, and identifies peak hours.
     """
-    logging.info(f"Tool Call: get_hourly_patterns(time_range='{time_range}', model_name='{model_name}', agent_name='{agent_name}')")
+    logging.info(f"[TOOL CALL-get_hourly_patterns] get_hourly_patterns(time_range='{time_range}', model_name='{model_name}', agent_name='{agent_name}')")
     try:
         time_range_dict = json.loads(parse_time_range(time_range))
         start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
@@ -977,7 +978,7 @@ def get_hourly_model_distribution(
     Get hourly request distribution broken down by model.
     Use this to see if different models are used at different times of day.
     """
-    logging.info(f"Tool Call: get_hourly_model_distribution(time_range='{time_range}', agent_name='{agent_name}')")
+    logging.info(f"[TOOL CALL-get_hourly_model_distribution] get_hourly_model_distribution(time_range='{time_range}', agent_name='{agent_name}')")
     try:
         time_range_dict = json.loads(parse_time_range(time_range))
         start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
@@ -1073,7 +1074,7 @@ def get_hourly_model_latency_heatmap(
     Use this to visualize if specific models get slower at specific times.
     Returns Avg and P95 latency per (Hour, Model).
     """
-    logging.info(f"Tool Call: get_hourly_model_latency_heatmap(time_range='{time_range}', agent_name='{agent_name}')")
+    logging.info(f"[TOOL CALL-get_hourly_model_latency_heatmap] get_hourly_model_latency_heatmap(time_range='{time_range}', agent_name='{agent_name}')")
     try:
         time_range_dict = json.loads(parse_time_range(time_range))
         start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
@@ -1162,7 +1163,7 @@ def get_agent_comparison(
     
     Returns per-agent statistics including calls, latency, and token usage.
     """
-    logging.info(f"Tool Call: get_agent_comparison(time_range='{time_range}', model_name='{model_name}')")
+    logging.info(f"[TOOL CALL-get_agent_comparison] get_agent_comparison(time_range='{time_range}', model_name='{model_name}')")
     try:
         time_range_dict = json.loads(parse_time_range(time_range))
         start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
@@ -1293,7 +1294,7 @@ def get_model_comparison(
     Returns:
         JSON string with per-model performance comparison
     """
-    logging.info(f"Tool Call: get_model_comparison(time_range='{time_range}', agent_name='{agent_name}')")
+    logging.info(f"[TOOL CALL-get_model_comparison] get_model_comparison(time_range='{time_range}', agent_name='{agent_name}')")
     try:
         time_range_dict = json.loads(parse_time_range(time_range))
         start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
@@ -1440,7 +1441,7 @@ def get_agent_model_matrix(
     Returns:
         JSON string with agent-model performance matrix
     """
-    logging.info(f"Tool Call: get_agent_model_matrix(time_range='{time_range}')")
+    logging.info(f"[TOOL CALL-get_agent_model_matrix] get_agent_model_matrix(time_range='{time_range}')")
     try:
         time_range_dict = json.loads(parse_time_range(time_range))
         start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
@@ -1576,7 +1577,7 @@ def get_token_correlation(
     
     Returns correlation coefficients and scatter plot data.
     """
-    logging.info(f"Tool Call: get_token_correlation(time_range='{time_range}', model_name='{model_name}', agent_name='{agent_name}')")
+    logging.info(f"[TOOL CALL-get_token_correlation] get_token_correlation(time_range='{time_range}', model_name='{model_name}', agent_name='{agent_name}')")
     try:
         time_range_dict = json.loads(parse_time_range(time_range))
         start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
@@ -1672,7 +1673,7 @@ def get_outlier_analysis(
     
     Returns list of outlier requests with full details.
     """
-    logging.info(f"Tool Call: get_outlier_analysis(time_range='{time_range}', model_name='{model_name}', agent_name='{agent_name}', threshold_std={threshold_std})")
+    logging.info(f"[TOOL CALL-get_outlier_analysis] get_outlier_analysis(time_range='{time_range}', model_name='{model_name}', agent_name='{agent_name}', threshold_std={threshold_std})")
     try:
         time_range_dict = json.loads(parse_time_range(time_range))
         start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
@@ -1775,7 +1776,7 @@ def get_slowest_queries(
     This is the merged functionality from slow_query_analyzer.
     Returns request IDs and metadata for the slowest queries.
     """
-    logging.info(f"Tool Call: get_slowest_queries(num_queries={num_queries}, time_range='{time_range}', model_name='{model_name}', agent_name='{agent_name}')")
+    logging.info(f"[TOOL CALL-get_slowest_queries] get_slowest_queries(num_queries={num_queries}, time_range='{time_range}', model_name='{model_name}', agent_name='{agent_name}')")
     try:
         time_range_dict = json.loads(parse_time_range(time_range))
         start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
@@ -1886,7 +1887,7 @@ def get_query_details(request_id: str) -> str:
     This allows deep-dive analysis of individual slow queries.
     Merged from slow_query_analyzer's fetch_single_query.
     """
-    logging.info(f"Tool Call: get_query_details(request_id='{request_id}')")
+    logging.info(f"[TOOL CALL-get_query_details] get_query_details(request_id='{request_id}')")
     try:
         tables = get_table_list()
         
@@ -1957,7 +1958,7 @@ def get_concurrent_request_impact(
     
     Groups requests into time buckets and correlates concurrency with latency.
     """
-    logging.info(f"Tool Call: get_concurrent_request_impact(time_range='{time_range}', model_name='{model_name}', bucket_size={bucket_size})")
+    logging.info(f"[TOOL CALL-get_concurrent_request_impact] get_concurrent_request_impact(time_range='{time_range}', model_name='{model_name}', bucket_size={bucket_size})")
     try:
         time_range_dict = json.loads(parse_time_range(time_range))
         start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
@@ -2056,7 +2057,7 @@ def detect_performance_degradation(
     
     Compares recent performance to baseline to identify trends.
     """
-    logging.info(f"Tool Call: detect_performance_degradation(time_range='{time_range}', model_name='{model_name}', window_size={window_size})")
+    logging.info(f"[TOOL CALL-detect_performance_degradation] detect_performance_degradation(time_range='{time_range}', model_name='{model_name}', window_size={window_size})")
     try:
         time_range_dict = json.loads(parse_time_range(time_range))
         start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
@@ -2145,7 +2146,7 @@ def get_cost_analysis(
     
     Provides cost breakdown by agent and identifies expensive operations.
     """
-    logging.info(f"Tool Call: get_cost_analysis(time_range='{time_range}', model_name='{model_name}', agent_name='{agent_name}')")
+    logging.info(f"[TOOL CALL-get_cost_analysis] get_cost_analysis(time_range='{time_range}', model_name='{model_name}', agent_name='{agent_name}')")
     try:
         time_range_dict = json.loads(parse_time_range(time_range))
         start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
@@ -2241,7 +2242,7 @@ def compare_time_periods(
     
     Useful for before/after analysis or A/B testing validation.
     """
-    logging.info(f"Tool Call: compare_time_periods(period1='{period1}', period2='{period2}', model_name='{model_name}', agent_name='{agent_name}')")
+    logging.info(f"[TOOL CALL-compare_time_periods] compare_time_periods(period1='{period1}', period2='{period2}', model_name='{model_name}', agent_name='{agent_name}')")
     try:
         time_range_dict1 = json.loads(parse_time_range(period1))
         start1, end1 = time_range_dict1['start_date'], time_range_dict1['end_date']
@@ -2342,7 +2343,7 @@ def cluster_slow_queries(
     
     Returns clusters with representative examples and statistics.
     """
-    logging.info(f"Tool Call: cluster_slow_queries(num_queries={num_queries}, time_range='{time_range}', model_name='{model_name}', agent_name='{agent_name}')")
+    logging.info(f"[TOOL CALL-cluster_slow_queries] cluster_slow_queries(num_queries={num_queries}, time_range='{time_range}', model_name='{model_name}', agent_name='{agent_name}')")
     try:
         time_range_dict = json.loads(parse_time_range(time_range))
         start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
@@ -2509,7 +2510,7 @@ def analyze_correlation_detailed(
     
     Provides comprehensive correlation matrix and statistical significance.
     """
-    logging.info(f"Tool Call: analyze_correlation_detailed(time_range='{time_range}', model_name='{model_name}', agent_name='{agent_name}')")
+    logging.info(f"[TOOL CALL-analyze_correlation_detailed] analyze_correlation_detailed(time_range='{time_range}', model_name='{model_name}', agent_name='{agent_name}')")
     try:
         time_range_dict = json.loads(parse_time_range(time_range))
         start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
@@ -2633,7 +2634,7 @@ def fetch_slow_queries(num_records: int = 20, agent_name: Optional[str] = None) 
     Returns:
         A JSON string containing the count and list of request IDs with latency.
     """
-    logging.info(f"Tool Call: fetch_slow_queries(num_records={num_records}, agent_name='{agent_name}')")
+    logging.info(f"[TOOL CALL-fetch_slow_queries] fetch_slow_queries(num_records={num_records}, agent_name='{agent_name}')")
     logging.info(f"[PROGRESS] Starting fetch of {num_records} slowest queries")
     try:
         where_clause = "T.full_request IS NOT NULL AND T.full_response IS NOT NULL"
@@ -2718,7 +2719,7 @@ def fetch_single_query(request_id: str) -> str:
     Returns:
         A JSON string containing the full query details.
     """
-    logging.info(f"Tool Call: fetch_single_query(request_id='{request_id}')")
+    logging.info(f"[TOOL CALL-fetch_single_query] fetch_single_query(request_id='{request_id}')")
     logging.info(f"[PROGRESS] Starting fetch for query {request_id}")
     try:
         tables = get_table_list()
@@ -2806,7 +2807,7 @@ def fetch_slow_queries_batch(
     Returns:
         JSON string with array of query details including full request/response
     """
-    logging.info(f"Tool Call: fetch_slow_queries_batch(num_queries={num_queries}, time_range='{time_range}', model_name='{model_name}', agent_name='{agent_name}')")
+    logging.info(f"[TOOL CALL-fetch_slow_queries_batch] fetch_slow_queries_batch(num_queries={num_queries}, time_range='{time_range}', model_name='{model_name}', agent_name='{agent_name}')")
     # Cap number of queries to prevent massive payloads that cause timeouts
     MAX_QUERIES = 20
     if num_queries > MAX_QUERIES:
@@ -2852,7 +2853,7 @@ def fetch_slow_queries_batch(
           -- Extract last user message text (robustly via ARRAY/LIMIT and ignore empty messages)
           COALESCE(ARRAY(
             SELECT 
-              (SELECT STRING_AGG(JSON_VALUE(p, '$.text'), ' ') FROM UNNEST(JSON_QUERY_ARRAY(T.full_request, '$.contents')) AS p)
+              (SELECT STRING_AGG(JSON_VALUE(p, '$.text'), ' ') FROM UNNEST(JSON_QUERY_ARRAY(c, '$.parts')) AS p)
             FROM UNNEST(COALESCE(JSON_QUERY_ARRAY(T.full_request, '$.contents'), [])) AS c WITH OFFSET AS off
             WHERE JSON_VALUE(c, '$.role') = 'user'
             AND LENGTH((SELECT STRING_AGG(JSON_VALUE(p, '$.text'), ' ') FROM UNNEST(JSON_QUERY_ARRAY(c, '$.parts')) AS p)) > 0
@@ -2895,7 +2896,7 @@ def fetch_slow_queries_batch(
                 "output_token_count": int(row['output_token_count']) if pd.notna(row['output_token_count']) else None,
                 "prompt_token_count": int(row['prompt_token_count']) if pd.notna(row['prompt_token_count']) else None,
                 "total_token_count": int(row['total_token_count']) if pd.notna(row['total_token_count']) else None,
-                "query_preview": row['query_preview'] if pd.notna(row['query_preview']) else None
+                "query_preview": row['query_preview'].replace('\n', ' ').replace('\r', '').replace('|', ' ') if pd.notna(row['query_preview']) else None
             }
             queries.append(record)
         
@@ -2943,7 +2944,7 @@ def fetch_fastest_queries(
     Returns:
         JSON string with array of query details including full request/response
     """
-    logging.info(f"Tool Call: fetch_fastest_queries(num_queries={num_queries}, time_range='{time_range}', model_name='{model_name}', agent_name='{agent_name}')")
+    logging.info(f"[TOOL CALL-fetch_fastest_queries] fetch_fastest_queries(num_queries={num_queries}, time_range='{time_range}', model_name='{model_name}', agent_name='{agent_name}')")
     # Cap number of queries to prevent massive payloads
     MAX_QUERIES = 20
     if num_queries > MAX_QUERIES:
@@ -3064,7 +3065,7 @@ def get_token_velocity(
     High TPOT (> 0.1s/token) indicates compute bottlenecks (model struggling).
     Low TPOT (< 0.05s/token) but high latency indicates verbose output (generating too much text).
     """
-    logging.info(f"Tool Call: get_token_velocity(time_range='{time_range}', model_name='{model_name}', agent_name='{agent_name}')")
+    logging.info(f"[TOOL CALL-get_token_velocity] get_token_velocity(time_range='{time_range}', model_name='{model_name}', agent_name='{agent_name}')")
     try:
         time_range_dict = json.loads(parse_time_range(time_range))
         start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
@@ -3171,7 +3172,7 @@ def analyze_request_queuing(
     Checks if multiple requests arriving within a small window (e.g. 1s)
     lead to increased latency, suggesting a queuing mechanism is delaying execution.
     """
-    logging.info(f"Tool Call: analyze_request_queuing(time_range='{time_range}', model_name='{model_name}', agent_name='{agent_name}', burst_window_seconds={burst_window_seconds})")
+    logging.info(f"[TOOL CALL-analyze_request_queuing] analyze_request_queuing(time_range='{time_range}', model_name='{model_name}', agent_name='{agent_name}', burst_window_seconds={burst_window_seconds})")
     try:
         time_range_dict = json.loads(parse_time_range(time_range))
         start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
@@ -3270,7 +3271,7 @@ def check_kpi_compliance(
         p95_latency_target: Target for P95 latency (defaults to config or 5.0)
         agent_name: Filter by specific agent (defaults to config or None)
     """
-    logging.info(f"Tool Call: check_kpi_compliance(time_range='{time_range}', mean_latency_target={mean_latency_target}, p95_latency_target={p95_latency_target}, agent_name='{agent_name}')")
+    logging.info(f"[TOOL CALL-check_kpi_compliance] check_kpi_compliance(time_range='{time_range}', mean_latency_target={mean_latency_target}, p95_latency_target={p95_latency_target}, agent_name='{agent_name}')")
     try:
         # Load config to get defaults
         config_str = get_analysis_config()
@@ -3402,7 +3403,7 @@ def save_analysis_report(
     Returns:
         A JSON string confirming the save or reporting an error
     """
-    logging.info(f"Tool Call: save_analysis_report(filename='{filename}')")
+    logging.info(f"[TOOL CALL-save_analysis_report] save_analysis_report(filename='{filename}')")
     try:
         print(f"DEBUG: save_analysis_report CALLED with filename={filename}") # DEBUG PRINT
         import os
@@ -3415,7 +3416,7 @@ def save_analysis_report(
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
         if not filename or filename == "latency_analysis_report.md" or "autonomous" not in filename:
-             base_name = "autonomous_latency_analysis_report"
+             base_name = "latency_report"
         else:
              base_name = filename.replace(".md", "")
              
@@ -3472,7 +3473,7 @@ def get_analysis_config() -> str:
     Returns:
         JSON string containing the configuration (time period, KPIs, agent filter, analysis_scope, etc.).
     """
-    logging.info("Tool Call: get_analysis_config()")
+    logging.info("[TOOL CALL-get_analysis_config] get_analysis_config()")
     try:
         # Assuming the config file is in the parent directory of agents/latency_analyzer
         # agents/latency_analyzer/utils.py -> ../../autonomous_analysis_90d.json
@@ -3526,7 +3527,7 @@ def analyze_thinking_overhead(
     Returns:
         JSON with thinking patterns, ratios, and recommendations
     """
-    logging.info(f"Tool Call: analyze_thinking_overhead(time_range='{time_range}', model_name='{model_name}', agent_name='{agent_name}')")
+    logging.info(f"[TOOL CALL-analyze_thinking_overhead] analyze_thinking_overhead(time_range='{time_range}', model_name='{model_name}', agent_name='{agent_name}')")
     try:
         time_range_dict = json.loads(parse_time_range(time_range))
         start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
@@ -3629,7 +3630,7 @@ def detect_compute_inefficiency(
     
     Flags queries where Actual > 5x Expected.
     """
-    logging.info(f"Tool Call: detect_compute_inefficiency(time_range='{time_range}', model_name='{model_name}', agent_name='{agent_name}')")
+    logging.info(f"[TOOL CALL-detect_compute_inefficiency] detect_compute_inefficiency(time_range='{time_range}', model_name='{model_name}', agent_name='{agent_name}')")
     try:
         time_range_dict = json.loads(parse_time_range(time_range))
         start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
@@ -3723,7 +3724,7 @@ def get_generation_config_comparison(
     Returns:
         JSON string with per-config performance comparison
     """
-    logging.info(f"Tool Call: get_generation_config_comparison(time_range='{time_range}', agent_name='{agent_name}', model_name='{model_name}')")
+    logging.info(f"[TOOL CALL-get_generation_config_comparison] get_generation_config_comparison(time_range='{time_range}', agent_name='{agent_name}', model_name='{model_name}')")
     try:
         time_range_dict = json.loads(parse_time_range(time_range))
         start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
@@ -3874,7 +3875,7 @@ def analyze_config_correlation(
     Returns:
         JSON string with correlation analysis and scatter plot data
     """
-    logging.info(f"Tool Call: analyze_config_correlation(time_range='{time_range}', agent_name='{agent_name}', model_name='{model_name}')")
+    logging.info(f"[TOOL CALL-analyze_config_correlation] analyze_config_correlation(time_range='{time_range}', agent_name='{agent_name}', model_name='{model_name}')")
     try:
         time_range_dict = json.loads(parse_time_range(time_range))
         start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
@@ -4014,7 +4015,7 @@ def get_config_outliers(
     Returns:
         JSON string with config outliers and optimization recommendations
     """
-    logging.info(f"Tool Call: get_config_outliers(time_range='{time_range}', threshold_efficiency={threshold_efficiency})")
+    logging.info(f"[TOOL CALL-get_config_outliers] get_config_outliers(time_range='{time_range}', threshold_efficiency={threshold_efficiency})")
     try:
         time_range_dict = json.loads(parse_time_range(time_range))
         start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
@@ -4156,7 +4157,7 @@ def get_config_outliers(
 
 def set_dimensions_and_transfer(tool_context: ToolContext, dimensions: list[str]) -> dict:
     """Sets the DIMENSIONS_LIST in session state and transfers control to the processing loop."""
-    logging.info(f"Tool Call: set_dimensions_and_transfer(dimensions={dimensions})")
+    logging.info(f"[TOOL CALL-set_dimensions_and_transfer] set_dimensions_and_transfer(dimensions={dimensions})")
     logging.info(f"Setting DIMENSIONS_LIST to: {dimensions}")
     tool_context.state["DIMENSIONS_LIST"] = dimensions
     tool_context.state["DIMENSION_INDEX"] = 0
@@ -4166,15 +4167,15 @@ def set_dimensions_and_transfer(tool_context: ToolContext, dimensions: list[str]
 
 def trigger_latency_parallel_report(tool_context: ToolContext) -> dict:
     """Transfers control to the complete_report_generator for parallel processing."""
-    logging.info("Tool Call: trigger_latency_parallel_report()")
-    logging.info("Triggering complete_report_generator for parallel processing.")
+    logging.info("[TOOL CALL-trigger_latency_parallel_report] trigger_latency_parallel_report()")
+    logging.info("Triggering report_orchestrator for parallel processing and automatic saving.")
     tool_context.state["LAST_ACTION"] = "Parallel"
-    tool_context.actions.transfer_to_agent = "complete_report_generator"
+    tool_context.actions.transfer_to_agent = "report_orchestrator"
     return {"status": "success", "message": "Starting complete report generation in parallel."}
 
 def process_latency_question(tool_context: ToolContext, dimension_name: str, user_question: str) -> dict:
     """Sets up the session state to process a single user-provided question within a specific dimension."""
-    logging.info(f"Tool Call: process_latency_question(dimension_name='{dimension_name}', user_question='{user_question}')")
+    logging.info(f"[TOOL CALL-process_latency_question] process_latency_question(dimension_name='{dimension_name}', user_question='{user_question}')")
     logging.info(f"Processing user question for dimension '{dimension_name}': '{user_question}'")
     tool_context.state["CURRENT_DIMENSION"] = dimension_name
     tool_context.state["LAST_ACTION"] = "Question"
@@ -4185,7 +4186,7 @@ def process_latency_question(tool_context: ToolContext, dimension_name: str, use
 
 def read_report_content(tool_context: ToolContext) -> str:
     """Reads the current report content from session state (Parallel or Sequential)."""
-    logging.info("Tool Call: read_report_content()")
+    logging.info("[TOOL CALL-read_report_content] read_report_content()")
     if "FINAL_REPORT_MARKDOWN" in tool_context.state:
         return tool_context.state["FINAL_REPORT_MARKDOWN"]
     if "CURRENT_REPORT_MARKDOWN" in tool_context.state:
@@ -4232,7 +4233,7 @@ def get_daily_patterns(
         JSON string with daily statistics (request count, p50, p95, avg latency)
         grouped by Day of Week (1=Sunday, 2=Monday, ..., 7=Saturday).
     """
-    logging.info(f"Tool Call: get_daily_patterns(time_range='{time_range}', model_name='{model_name}', agent_name='{agent_name}')")
+    logging.info(f"[TOOL CALL-get_daily_patterns] get_daily_patterns(time_range='{time_range}', model_name='{model_name}', agent_name='{agent_name}')")
     try:
         time_range_dict = json.loads(parse_time_range(time_range))
         start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']

@@ -5,6 +5,7 @@
     * [Enable Gemini Requests Logging](#enable-gemini-requests-logging)
     * [Install Libraries](#install-libraries)
   * [Quick start](#quick-start)
+    * [Monitor Progress](#monitor-progress)
   * [Load Generator](#load-generator)
     * [Features](#features)
     * [Usage](#usage)
@@ -31,6 +32,7 @@
       * [5. Verify BigQuery Access](#5-verify-bigquery-access)
       * [6. Check Tool Return Format](#6-check-tool-return-format)
   * [Verification](#verification)
+    * [Automated Tests](#automated-tests)
 <!-- TOC -->
 # Latency Analysis
 
@@ -185,11 +187,21 @@ python load_generator.py all
 
 Generate Summary report of the LLM performance:
 ```shell
-./run_autonomous_analysis.sh
+./run_analysis.sh
+```
+
+### Monitor Progress
+You can monitor the analysis progress in real-time:
+```shell
+# View script output (including agent thoughts)
+tail -f latest_script.log
+
+# View detailed agent logs (tool calls, API requests)
+tail -f latest_agent.log
 ```
 
 Check BigQuery table for the logged llm calls
-Check generated .md report inside reports directory
+Check generated .md report inside reports directory (e.g., `reports/latency_report_<timestamp>.md`)
 
 ## Load Generator
 
@@ -401,7 +413,7 @@ The workflow logic is now in the system prompt (`agents/latency_analyzer/prompts
 5. Saves the report to `reports/` directory with timestamp
 
 **Report Files:**
-- Autonomous analysis (adaptive depth): `reports/autonomous_latency_analysis_report_YYYYMMDD_HHMMSS.md`
+- Autonomous analysis (adaptive depth): `reports/latency_report_YYYYMMDD_HHMMSS.md`
 - Deep research (forced): `reports/deep_latency_research_report_YYYYMMDD_HHMMSS.md`
 
 Alternatively, run it manually:
@@ -414,7 +426,7 @@ adk run --replay ../autonomous_analysis_90d.json latency_analyzer
 **Output Files:**
 
 The agent generates comprehensive markdown reports in the `reports/` directory:
-- **Format:** `reports/latency_analysis_report_<timestamp>.md`
+- **Format:** `reports/latency_report_<timestamp>.md`
 - **Content:** Executive summary, hypothesis testing results, key findings, root causes, and prioritized recommendations.
 
 
