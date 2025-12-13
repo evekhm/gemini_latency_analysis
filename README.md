@@ -87,8 +87,8 @@ The logs are saved to a BigQuery table for viewing and analysis.
 
 5. Enabled required APIs:
     ```shell
-    gcloud services enable aiplatform.googleapis.com --project="${PROJECT_ID}"
-    ```
+    gcloud services enable aiplatform.googleapis.com cloudtrace.googleapis.com --project="${PROJECT_ID}"    
+   ```
 
 6. For each LLM Model you want to enable BQ logging for, follow the steps below.
 

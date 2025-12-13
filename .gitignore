@@ -7,3 +7,7 @@
 
 /PROMPTS.md
 /agents/parallel_latency_analyzer/__pycache__/
+/samples/
+/latest_script.log
+/latest_agent.log
+/latest.log

@@ -15,3 +15,11 @@ google-adk
 numpy
 pandas
 python-dateutil
+opentelemetry-instrumentation-google-genai
+opentelemetry-instrumentation-sqlite3
+opentelemetry-exporter-gcp-logging
+opentelemetry-exporter-gcp-monitoring
+opentelemetry-exporter-otlp-proto-grpc
+opentelemetry-instrumentation-vertexai>=2.0b0
+opentelemetry-exporter-gcp-trace
+opentelemetry-sdk

@@ -16,7 +16,10 @@ from dotenv import load_dotenv
 from google.adk.tools.tool_context import ToolContext
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.models import LlmResponse
+from google.adk.models import LlmResponse
 import google.auth
+
+from .telemetry import trace_span
 
 load_dotenv()
 _, project = google.auth.default()
@@ -408,6 +411,7 @@ def verify_data_access() -> str:
     return json.dumps(result, cls=AnalysisEncoder, default=str)
 
 
+@trace_span()
 def execute_bigquery(query: str, timeout: int = 1200) -> pd.DataFrame:
     """Execute BigQuery query with persistent caching and timeout protection.
     
@@ -505,6 +509,7 @@ def build_multi_table_source(where_clause: str, select_suffix: str = "") -> str:
         return f"(\n{f' {chr(10)}    UNION ALL{chr(10)}'.join(table_queries)}\n  ) AS T"
 
 
+@trace_span()
 def get_overall_statistics(
     time_range: str = "24h",
     model_name: Optional[str] = None,
@@ -668,6 +673,7 @@ def get_overall_statistics(
         return json.dumps({"error": str(e)})
 
 
+@trace_span()
 def get_latency_distribution(
     time_range: str = "24h",
     model_name: Optional[str] = None,
@@ -817,6 +823,7 @@ def get_latency_distribution(
         return json.dumps({"error": str(e)})
 
 
+@trace_span()
 def get_hourly_patterns(
     time_range: str = "24h",
     model_name: Optional[str] = None,
@@ -970,6 +977,7 @@ def get_hourly_patterns(
         return json.dumps({"error": str(e)})
 
 
+@trace_span()
 def get_hourly_model_distribution(
     time_range: str = "24h",
     agent_name: Optional[str] = None
@@ -1065,6 +1073,7 @@ def get_hourly_model_distribution(
         return json.dumps({"error": str(e)})
 
 
+@trace_span()
 def get_hourly_model_latency_heatmap(
     time_range: str = "24h",
     agent_name: Optional[str] = None
@@ -1154,6 +1163,7 @@ def get_hourly_model_latency_heatmap(
         return json.dumps({"error": str(e)})
 
 
+@trace_span()
 def get_agent_comparison(
     time_range: str = "24h",
     model_name: Optional[str] = None
@@ -1277,6 +1287,7 @@ def get_agent_comparison(
         return json.dumps({"error": str(e)})
 
 
+@trace_span()
 def get_model_comparison(
     time_range: str = "24h",
     agent_name: Optional[str] = None
@@ -1423,6 +1434,7 @@ def get_model_comparison(
         return json.dumps({"error": str(e)})
 
 
+@trace_span()
 def get_agent_model_matrix(
     time_range: str = "24h"
 ) -> str:
@@ -1567,6 +1579,7 @@ def get_agent_model_matrix(
         return json.dumps({"error": str(e)})
 
 
+@trace_span()
 def get_token_correlation(
     time_range: str = "24h",
     model_name: Optional[str] = None,
@@ -1662,6 +1675,7 @@ def get_token_correlation(
         return json.dumps({"error": str(e)})
 
 
+@trace_span()
 def get_outlier_analysis(
     time_range: str = "24h",
     model_name: Optional[str] = None,
@@ -1764,6 +1778,7 @@ def get_outlier_analysis(
         return json.dumps({"error": str(e)})
 
 
+@trace_span()
 def get_slowest_queries(
     num_queries: int = 20,
     time_range: str = "24h",
@@ -1880,6 +1895,7 @@ def get_slowest_queries(
         return json.dumps({"error": str(e)})
 
 
+@trace_span()
 def get_query_details(request_id: str) -> str:
     """
     Get full details for a specific query by request_id.
@@ -1948,6 +1964,7 @@ def get_query_details(request_id: str) -> str:
         return json.dumps({"error": str(e)})
 
 
+@trace_span()
 def get_concurrent_request_impact(
     time_range: str = "24h",
     model_name: Optional[str] = None,
@@ -2047,6 +2064,7 @@ def get_concurrent_request_impact(
         return json.dumps({"error": str(e)})
 
 
+@trace_span()
 def detect_performance_degradation(
     time_range: str = "7d",
     model_name: Optional[str] = None,
@@ -2136,6 +2154,7 @@ def detect_performance_degradation(
         return json.dumps({"error": str(e)})
 
 
+@trace_span()
 def get_cost_analysis(
     time_range: str = "24h",
     model_name: Optional[str] = None,
@@ -2231,6 +2250,7 @@ def get_cost_analysis(
         return json.dumps({"error": str(e)})
 
 
+@trace_span()
 def compare_time_periods(
     period1: str,
     period2: str,
@@ -2326,6 +2346,7 @@ def compare_time_periods(
         return json.dumps({"error": str(e)})
 
 
+@trace_span()
 def cluster_slow_queries(
     num_queries: int = 50,
     time_range: str = "24h",
@@ -2500,6 +2521,7 @@ def cluster_slow_queries(
         return json.dumps({"error": str(e)})
 
 
+@trace_span()
 def analyze_correlation_detailed(
     time_range: str = "24h",
     model_name: Optional[str] = None,
@@ -2620,6 +2642,7 @@ def analyze_correlation_detailed(
         return json.dumps({"error": str(e)})
 
 
+@trace_span()
 def fetch_slow_queries(num_records: int = 20, agent_name: Optional[str] = None) -> str:
     """
     Fetches the top N slowest queries from the BigQuery logs and returns metadata only.
@@ -2705,6 +2728,7 @@ def fetch_slow_queries(num_records: int = 20, agent_name: Optional[str] = None) 
         return json.dumps({"error": error_msg})
 
 
+@trace_span()
 def fetch_single_query(request_id: str) -> str:
     """
     Fetches a single query's full details by request_id.
@@ -2780,6 +2804,7 @@ def fetch_single_query(request_id: str) -> str:
         return json.dumps({"error": error_msg})
 
 
+@trace_span()
 def fetch_slow_queries_batch(
     num_queries: int = 20,
     time_range: str = "24h",
@@ -2924,6 +2949,7 @@ def fetch_slow_queries_batch(
         return json.dumps({"error": error_msg})
 
 
+@trace_span()
 def fetch_fastest_queries(
     num_queries: int = 20,
     time_range: str = "24h",
@@ -3052,6 +3078,7 @@ def fetch_fastest_queries(
         return json.dumps({"error": error_msg})
 
 
+@trace_span()
 def get_token_velocity(
     time_range: str = "7d",
     model_name: Optional[str] = None,
@@ -3160,6 +3187,7 @@ def get_token_velocity(
         return json.dumps({"error": str(e)})
 
 
+@trace_span()
 def analyze_request_queuing(
     time_range: str = "24h",
     model_name: Optional[str] = None,
@@ -3256,6 +3284,7 @@ def analyze_request_queuing(
         return json.dumps({"error": str(e)})
 
 
+@trace_span()
 def check_kpi_compliance(
     time_range: Optional[str] = None,
     mean_latency_target: Optional[float] = None,
@@ -3386,6 +3415,7 @@ def check_kpi_compliance(
         return json.dumps({"error": str(e)})
 
 
+@trace_span()
 def save_analysis_report(
     report_content: str,
     filename: str = "latency_analysis_report.md"
@@ -3460,6 +3490,7 @@ def save_analysis_report(
         return json.dumps({"error": error_msg})
 
 
+@trace_span()
 def get_analysis_config() -> str:
     """Reads the analysis configuration from config files (.json).
     
@@ -3512,6 +3543,7 @@ def get_analysis_config() -> str:
         logging.error(error_msg)
         return json.dumps({"error": error_msg})
 
+@trace_span()
 def analyze_thinking_overhead(
     time_range: str = "24h",
     model_name: Optional[str] = None,
@@ -3616,6 +3648,7 @@ def analyze_thinking_overhead(
         return json.dumps({"error": error_msg})
 
 
+@trace_span()
 def detect_compute_inefficiency(
     time_range: str = "24h",
     model_name: Optional[str] = None,
@@ -3705,6 +3738,7 @@ def detect_compute_inefficiency(
         logging.error(error_msg)
         return json.dumps({"error": error_msg})
 
+@trace_span()
 def get_generation_config_comparison(
     time_range: str = "24h",
     agent_name: Optional[str] = None,
@@ -3853,6 +3887,7 @@ def get_generation_config_comparison(
         return json.dumps({"error": error_msg})
 
 
+@trace_span()
 def analyze_config_correlation(
     time_range: str = "24h",
     agent_name: Optional[str] = None,
@@ -3996,6 +4031,7 @@ def analyze_config_correlation(
         return json.dumps({"error": error_msg})
 
 
+@trace_span()
 def get_config_outliers(
     time_range: str = "24h",
     threshold_efficiency: float = 0.3
@@ -4221,6 +4257,7 @@ async def accumulate_investigator_output(
 # Alias for agent convenience
 get_request_details = get_query_details
 
+@trace_span()
 def get_daily_patterns(
     time_range: str = "24h",
     model_name: Optional[str] = None,

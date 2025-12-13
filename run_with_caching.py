@@ -19,6 +19,7 @@ from google.adk.apps.app import App
 from google.adk.cli.utils import logs
 from google.adk.runners import InMemoryRunner
 from google.genai import types
+from agents.parallel_latency_analyzer.telemetry import init_tracer
 
 # Add agents directory to path
 agents_dir = Path(__file__).parent / "agents"
@@ -173,6 +174,9 @@ def main():
     """Main entry point."""
     # Setup logging
     logs.setup_adk_logger(logging.INFO)
+
+    # Setup OpenTelemetry Tracing
+    init_tracer()
     
     # Manual Logger Setup to ensure file creation
     try:
