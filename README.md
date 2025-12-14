@@ -340,7 +340,34 @@ The `latency_analyzer` agent is a comprehensive AI-powered tool that automates l
 *   `get_model_comparison()` - Compare KPI metrics across different models (requires multiple tables/models in investigation)
 *   `get_agent_model_matrix()` - detailed breakdown of agent performance per model
 
+### Parallel Latency Analyzer (New Swarm Architecture)
+
+The system now includes a **Parallel "Swarm" Architecture** (`agents/parallel_latency_analyzer`) that significantly speeds up analysis by running investigations concurrently.
+
+**Key Features:**
+- **Swarm Architecture**: Spawns multiple specialized teams (Strategist, Investigator, Critique, Writer) to analyze different dimensions simultaneously.
+- **Context Caching**: Uses ADK Context Caching (`run_with_caching.py`) to reduce TTFT and costs.
+- **Dimensions Analyzed**:
+    - KPI Compliance
+    - Hourly & Daily Patterns
+    - Token Correlation & Cost Efficiency
+    - Micro-Bursts & Queuing
+    - Comparative Analysis (Agents & Models)
+    - Slow Query Deep Dive
+
 ### Usage
+
+**Run Parallel Analysis (Recommended):**
+```shell
+./run_test_analysis.sh
+```
+This script uses `run_with_caching.py` to execute the swarm agent with context caching enabled.
+
+**Run Standard/Old Analysis:**
+```shell
+./run_autonomous_analysis.sh
+```
+
 
 **Quick Start - Autonomous Analysis (Recommended):**
 
@@ -400,6 +427,13 @@ The agent uses JSON config files with two key sections:
   - `p95_latency_target`: Target for P95 latency in seconds (e.g., 5.0)
   
 - **`agent_name`**: Filter for a specific agent (e.g., "my_agent") or `null` for all agents
+- **`filters`**: Granular inclusion/exclusion of agents (New in Parallel Analyzer)
+  ```json
+  "filters": {
+    "agents_included": "latency_analyzer, final_report_assembler", // Only analyze these
+    "agents_excluded": "health_check_agent" // Exclude these
+  }
+  ```
 
 - **`num_slowest_queries`**: Number of slow queries to analyze in detail (e.g., 20)
 
@@ -626,15 +660,17 @@ The agent should detect these errors and report them to you.
 
 ### Automated Tests
 
-Run the comprehensive test suite to verify all components:
+The project now includes a comprehensive test suite in `tests/`:
 
 ```shell
 # Run all tests
 python -m pytest tests/
 
-# Run specific test modules
-python -m pytest tests/test_model_analysis.py
-python -m pytest tests/test_kpi_compliance.py
+# Key Test Modules:
+# - tests/test_model_analysis.py: Verifies model comparison logic
+# - tests/test_slowest_queries.py: Checks slow query extraction and sanitization
+# - tests/test_tool_fixes.py: Verifies fixes for common tool errors
+# - tests/test_agent_filtering_sql.py: Tests the SQL generation for agent filtering
 ```
 
 To verify the agent's logic (using mocks), run the test script:

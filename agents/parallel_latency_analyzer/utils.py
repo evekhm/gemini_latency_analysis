@@ -16,7 +16,6 @@ from dotenv import load_dotenv
 from google.adk.tools.tool_context import ToolContext
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.models import LlmResponse
-from google.adk.models import LlmResponse
 import google.auth
 
 from .telemetry import trace_span
@@ -308,13 +307,25 @@ def get_analysis_metadata() -> str:
     from datetime import datetime
     
     tables = get_table_list()
+    config = _load_config_data()
+    filters = config.get("filters", {})
+    
+    def _clean_list(s):
+        if not s: return []
+        return [x.strip() for x in str(s).split(',') if x.strip()]
+
+    included = _clean_list(filters.get("agents_included", ""))
+    excluded = _clean_list(filters.get("agents_excluded", ""))
+    
     metadata = {
         "project_id": PROJECT_ID,
         "dataset": DATASET_ID,
-        "tables": tables,  # Now returns list of tables
+        "tables": tables,
         "table_count": len(tables),
         "analyzer_version": AGENT_VERSION,
-        "generated_timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        "generated_timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "agents_included": included,
+        "agents_excluded": excluded
     }
     
     return json.dumps(metadata, cls=AnalysisEncoder)
@@ -548,6 +559,11 @@ def get_overall_statistics(
         if agent_name:
             where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
         
+        # Apply global agent filters
+        global_filter = _get_global_agent_filter("T")
+        if global_filter:
+            where_clauses.append(global_filter.lstrip(" AND "))
+        
         where_clause = " AND ".join(where_clauses)
         
         # Build query for multiple tables using UNION ALL
@@ -700,6 +716,11 @@ def get_latency_distribution(
             where_clauses.append(f"T.model LIKE '%{model_name}%'")
         if agent_name:
             where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
+            
+        # Apply global agent filters
+        global_filter = _get_global_agent_filter("T")
+        if global_filter:
+            where_clauses.append(global_filter.lstrip(" AND "))
         
         where_clause = " AND ".join(where_clauses)
         
@@ -851,6 +872,11 @@ def get_hourly_patterns(
         if agent_name:
             where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
         
+        # Apply global agent filters
+        global_filter = _get_global_agent_filter("T")
+        if global_filter:
+            where_clauses.append(global_filter.lstrip(" AND "))
+        
         where_clause = " AND ".join(where_clauses)
         
         # Build query for multiple tables using UNION ALL
@@ -999,6 +1025,11 @@ def get_hourly_model_distribution(
         
         if agent_name:
             where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
+            
+        # Apply global agent filters
+        global_filter = _get_global_agent_filter("T")
+        if global_filter:
+            where_clauses.append(global_filter.lstrip(" AND "))
         
         where_clause = " AND ".join(where_clauses)
         tables = get_table_list()
@@ -1098,6 +1129,11 @@ def get_hourly_model_latency_heatmap(
         if agent_name:
             where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
             
+        # Apply global agent filters
+        global_filter = _get_global_agent_filter("T")
+        if global_filter:
+            where_clauses.append(global_filter.lstrip(" AND "))
+            
         where_clause = " AND ".join(where_clauses)
         tables = get_table_list()
         
@@ -1187,6 +1223,11 @@ def get_agent_comparison(
         
         if model_name:
             where_clauses.append(f"T.model LIKE '%{model_name}%'")
+            
+        # Apply global agent filters
+        global_filter = _get_global_agent_filter("T")
+        if global_filter:
+            where_clauses.append(global_filter.lstrip(" AND "))
         
         where_clause = " AND ".join(where_clauses)
         
@@ -1320,6 +1361,11 @@ def get_model_comparison(
         
         if agent_name:
             where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
+            
+        # Apply global agent filters
+        global_filter = _get_global_agent_filter("T")
+        if global_filter:
+            where_clauses.append(global_filter.lstrip(" AND "))
         
         where_clause = " AND ".join(where_clauses)
         
@@ -1466,6 +1512,11 @@ def get_agent_model_matrix(
             "JSON_VALUE(T.metadata.request_latency) IS NOT NULL"
         ]
         
+        # Apply global agent filters
+        global_filter = _get_global_agent_filter("T")
+        if global_filter:
+            where_clauses.append(global_filter.lstrip(" AND "))
+            
         where_clause = " AND ".join(where_clauses)
         
         # Build query for multiple tables using UNION ALL
@@ -1608,6 +1659,11 @@ def get_token_correlation(
         if agent_name:
             where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
         
+        # Apply global agent filters
+        global_filter = _get_global_agent_filter("T")
+        if global_filter:
+            where_clauses.append(global_filter.lstrip(" AND "))
+            
         where_clause = " AND ".join(where_clauses)
         
         # Build query for multiple tables using UNION ALL
@@ -1704,6 +1760,11 @@ def get_outlier_analysis(
         if agent_name:
             where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
         
+        # Apply global agent filters
+        global_filter = _get_global_agent_filter("T")
+        if global_filter:
+            where_clauses.append(global_filter.lstrip(" AND "))
+            
         where_clause = " AND ".join(where_clauses)
         
         # Build query for multiple tables using UNION ALL
@@ -1808,6 +1869,11 @@ def get_slowest_queries(
         if agent_name:
             where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
         
+        # Apply global agent filters
+        global_filter = _get_global_agent_filter("T")
+        if global_filter:
+            where_clauses.append(global_filter.lstrip(" AND "))
+            
         where_clause = " AND ".join(where_clauses)
         
         # Build multi-table source
@@ -1824,16 +1890,7 @@ def get_slowest_queries(
           SAFE_CAST(JSON_VALUE(full_response.usageMetadata.candidatesTokenCount) AS INT64) AS output_tokens,
           SAFE_CAST(JSON_VALUE(full_response.usageMetadata.thoughtsTokenCount) AS INT64) AS thought_tokens,
           SAFE_CAST(JSON_VALUE(full_response.usageMetadata.totalTokenCount) AS INT64) AS total_tokens,
-          -- Extract last user message text (robustly via ARRAY/LIMIT and ignore empty messages)
-          ARRAY(
-            SELECT 
-              (SELECT STRING_AGG(JSON_VALUE(p, '$.text'), ' ') FROM UNNEST(JSON_QUERY_ARRAY(c, '$.parts')) AS p)
-            FROM UNNEST(COALESCE(JSON_QUERY_ARRAY(full_request, '$.contents'), [])) AS c WITH OFFSET AS off
-            WHERE JSON_VALUE(c, '$.role') = 'user'
-            AND LENGTH((SELECT STRING_AGG(JSON_VALUE(p, '$.text'), ' ') FROM UNNEST(JSON_QUERY_ARRAY(c, '$.parts')) AS p)) > 0
-            ORDER BY off DESC
-            LIMIT 1
-          )[SAFE_OFFSET(0)] AS last_user_message
+          SAFE_CAST(JSON_VALUE(full_response.usageMetadata.totalTokenCount) AS INT64) AS total_tokens
         FROM 
             {union_source}
         ORDER BY latency DESC
@@ -1850,21 +1907,7 @@ def get_slowest_queries(
         
         queries = []
         for _, row in df.iterrows():
-            # Extract query preview from last user message
-            query_preview = "N/A"
-            if pd.notna(row['last_user_message']):
-                msg = row['last_user_message']
-                # Apply context stripping logic
-                if "</Context>" in msg:
-                    msg = msg.split("</Context>")[-1].strip()
-                elif "</context>" in msg:
-                    msg = msg.split("</context>")[-1].strip()
-                
-                if len(msg) > 500 and "for the question" in msg.lower():
-                    idx = msg.lower().find("for the question")
-                    msg = msg[idx:].strip()
-                
-                query_preview = msg[:150]
+
 
             queries.append({
                 "request_id": row['request_id'],
@@ -1876,7 +1919,7 @@ def get_slowest_queries(
                 "output_tokens": int(row['output_tokens']) if pd.notna(row['output_tokens']) else None,
                 "thought_tokens": int(row['thought_tokens']) if pd.notna(row['thought_tokens']) else None,
                 "total_tokens": int(row['total_tokens']) if pd.notna(row['total_tokens']) else None,
-                "query_preview": query_preview
+                "total_tokens": int(row['total_tokens']) if pd.notna(row['total_tokens']) else None
             })
         
         result = {
@@ -1989,6 +2032,11 @@ def get_concurrent_request_impact(
         
         if model_name:
             where_clauses.append(f"T.model LIKE '%{model_name}%'")
+            
+        # Apply global agent filters
+        global_filter = _get_global_agent_filter("T")
+        if global_filter:
+            where_clauses.append(global_filter.lstrip(" AND "))
         
         where_clause = " AND ".join(where_clauses)
         
@@ -2089,6 +2137,11 @@ def detect_performance_degradation(
         
         if model_name:
             where_clauses.append(f"T.model LIKE '%{model_name}%'")
+            
+        # Apply global agent filters
+        global_filter = _get_global_agent_filter("T")
+        if global_filter:
+            where_clauses.append(global_filter.lstrip(" AND "))
         
         where_clause = " AND ".join(where_clauses)
         
@@ -2181,6 +2234,11 @@ def get_cost_analysis(
         if agent_name:
             where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
         
+        # Apply global agent filters
+        global_filter = _get_global_agent_filter("T")
+        if global_filter:
+            where_clauses.append(global_filter.lstrip(" AND "))
+            
         where_clause = " AND ".join(where_clauses)
         
         tables = get_table_list()
@@ -2283,6 +2341,11 @@ def compare_time_periods(
             if agent_name:
                 where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
             
+            # Apply global agent filters
+            global_filter = _get_global_agent_filter("T")
+            if global_filter:
+                where_clauses.append(global_filter.lstrip(" AND "))
+            
             where_clause = " AND ".join(where_clauses)
             
             tables = get_table_list()
@@ -2381,6 +2444,11 @@ def cluster_slow_queries(
         if agent_name:
             where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
         
+        # Apply global agent filters
+        global_filter = _get_global_agent_filter("T")
+        if global_filter:
+            where_clauses.append(global_filter.lstrip(" AND "))
+            
         where_clause = " AND ".join(where_clauses)
         
         tables = get_table_list()
@@ -2549,6 +2617,11 @@ def analyze_correlation_detailed(
         if agent_name:
             where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
         
+        # Apply global agent filters
+        global_filter = _get_global_agent_filter("T")
+        if global_filter:
+            where_clauses.append(global_filter.lstrip(" AND "))
+            
         where_clause = " AND ".join(where_clauses)
         
         # Build multi-table source
@@ -2663,6 +2736,12 @@ def fetch_slow_queries(num_records: int = 20, agent_name: Optional[str] = None) 
         where_clause = "T.full_request IS NOT NULL AND T.full_response IS NOT NULL"
         if agent_name:
             where_clause += f" AND JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'"
+
+        # Apply global agent filters
+        global_filter = _get_global_agent_filter("T")
+        if global_filter:
+            where_clause += global_filter
+
 
         tables = get_table_list()
         
@@ -2856,6 +2935,11 @@ def fetch_slow_queries_batch(
         if agent_name:
             where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
         
+        # Apply global agent filters
+        global_filter = _get_global_agent_filter("T")
+        if global_filter:
+            where_clauses.append(global_filter.lstrip(" AND "))
+            
         where_clause = " AND ".join(where_clauses)
         
         # Build multi-table source
@@ -2994,6 +3078,11 @@ def fetch_fastest_queries(
         if agent_name:
             where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
         
+        # Apply global agent filters
+        global_filter = _get_global_agent_filter("T")
+        if global_filter:
+            where_clauses.append(global_filter.lstrip(" AND "))
+            
         where_clause = " AND ".join(where_clauses)
         
         # Build multi-table source
@@ -3217,6 +3306,11 @@ def analyze_request_queuing(
         if agent_name:
             where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
         
+        # Apply global agent filters
+        global_filter = _get_global_agent_filter("T")
+        if global_filter:
+            where_clauses.append(global_filter.lstrip(" AND "))
+            
         where_clause = " AND ".join(where_clauses)
         
         # Group by small time windows (micro-bursts)
@@ -3289,7 +3383,8 @@ def check_kpi_compliance(
     time_range: Optional[str] = None,
     mean_latency_target: Optional[float] = None,
     p95_latency_target: Optional[float] = None,
-    agent_name: Optional[str] = None
+    agent_name: Optional[str] = None,
+    model_name: Optional[str] = None
 ) -> str:
     """
     Check if current performance meets defined KPIs.
@@ -3299,8 +3394,9 @@ def check_kpi_compliance(
         mean_latency_target: Target for mean latency (defaults to config or 3.0)
         p95_latency_target: Target for P95 latency (defaults to config or 5.0)
         agent_name: Filter by specific agent (defaults to config or None)
+        model_name: Filter by specific model (optional)
     """
-    logging.info(f"[TOOL CALL-check_kpi_compliance] check_kpi_compliance(time_range='{time_range}', mean_latency_target={mean_latency_target}, p95_latency_target={p95_latency_target}, agent_name='{agent_name}')")
+    logging.info(f"[TOOL CALL-check_kpi_compliance] check_kpi_compliance(time_range='{time_range}', mean_latency_target={mean_latency_target}, p95_latency_target={p95_latency_target}, agent_name='{agent_name}', model_name='{model_name}')")
     try:
         # Load config to get defaults
         config_str = get_analysis_config()
@@ -3325,7 +3421,7 @@ def check_kpi_compliance(
             p95_latency_target = agent_overrides.get("p95_latency_target", config.get("kpis", {}).get("p95_latency_target", 5.0))
 
         # Reuse get_overall_statistics to get current global metrics
-        stats_json = get_overall_statistics(time_range=time_range, agent_name=agent_name)
+        stats_json = get_overall_statistics(time_range=time_range, agent_name=agent_name, model_name=model_name)
         stats = json.loads(stats_json)
         
         if "error" in stats:
@@ -3355,7 +3451,7 @@ def check_kpi_compliance(
         per_agent_compliance = []
         if agent_name is None:
             # Use get_agent_comparison to get per-agent stats
-            agent_stats_json = get_agent_comparison(time_range=time_range)
+            agent_stats_json = get_agent_comparison(time_range=time_range, model_name=model_name)
             agent_stats = json.loads(agent_stats_json)
             
             if "agents" in agent_stats:
@@ -3390,6 +3486,43 @@ def check_kpi_compliance(
         # Ensure alphabetical sorting
         per_agent_compliance.sort(key=lambda x: x['agent_name'])
 
+        # Per-Model Compliance
+        per_model_compliance = []
+        if model_name is None:
+             model_stats_json = get_model_comparison(time_range=time_range, agent_name=agent_name)
+             model_stats = json.loads(model_stats_json)
+
+             if "models" in model_stats:
+                 for model in model_stats["models"]:
+                     m_name = model["model_name"]
+                     m_mean = model["avg_latency"]
+                     m_p95 = model.get("p95_latency")
+
+                     # Determine target for this model
+                     # Use the Effective Global Target (which respects Included Agents)
+                     m_target_mean = mean_latency_target
+                     m_target_p95 = p95_latency_target
+
+                     m_mean_status = "pass" if m_mean is not None and m_mean <= m_target_mean else "fail"
+                     m_p95_status = "pass" if m_p95 is not None and m_p95 <= m_target_p95 else "fail" if m_p95 else "unknown"
+
+                     per_model_compliance.append({
+                         "model_name": m_name,
+                         "mean_latency": {
+                             "current": m_mean,
+                             "target": m_target_mean,
+                             "status": m_mean_status
+                         },
+                         "p95_latency": {
+                             "current": m_p95,
+                             "target": m_target_p95,
+                             "status": m_p95_status
+                         },
+                         "overall_status": "pass" if m_mean_status == "pass" and m_p95_status in ["pass", "unknown"] else "fail"
+                     })
+                     
+        per_model_compliance.sort(key=lambda x: x['model_name'])
+
         result = {
             "metadata": {
                 "time_range": f"{stats.get('metadata', {}).get('time_range', time_range)}",
@@ -3397,7 +3530,8 @@ def check_kpi_compliance(
                     "mean_latency": mean_latency_target,
                     "p95_latency": p95_latency_target
                 },
-                "agent_scope": agent_name if agent_name else "all agents"
+                "agent_scope": agent_name if agent_name else "all agents",
+                "model_scope": model_name if model_name else "all models"
             },
             "current_performance": {
                 "mean_latency": current_mean,
@@ -3405,11 +3539,12 @@ def check_kpi_compliance(
             },
             "compliance": compliance,
             "per_agent_compliance": per_agent_compliance,
+            "per_model_compliance": per_model_compliance,
             "summary": f"Overall status: {compliance['overall_status'].upper()}. Mean: {current_mean:.2f}s (Target: {mean_latency_target}s). P95: {current_p95:.2f}s (Target: {p95_latency_target}s)."
         }
         
         return json.dumps(result, cls=AnalysisEncoder)
-        
+
     except Exception as e:
         logging.error(f"Error in check_kpi_compliance: {str(e)}")
         return json.dumps({"error": str(e)})
@@ -3491,6 +3626,67 @@ def save_analysis_report(
 
 
 @trace_span()
+def _load_config_data() -> dict:
+    """
+    Internal helper to read and cache configuration.
+    Returns the parsed JSON dict (or empty dict on error).
+    """
+    try:
+        # Assuming the config file is in the parent directory of agents/latency_analyzer
+        # agents/latency_analyzer/utils.py -> ../../autonomous_analysis_90d.json
+        config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "autonomous_analysis_90d.json")
+        
+        if not os.path.exists(config_path):
+             # Fallback to current directory or relative path if running from root
+             config_path = "autonomous_analysis_90d.json"
+             
+        if not os.path.exists(config_path):
+            logging.warning(f"Config file not found at {config_path}")
+            return {}
+
+        with open(config_path, 'r') as f:
+            data = json.load(f)
+            # Return only the config section if it exists, otherwise the whole file
+            return data.get("config", data)
+    except Exception as e:
+        logging.error(f"Error reading config: {str(e)}")
+        return {}
+
+
+def _get_global_agent_filter(table_alias: str = "T") -> str:
+    """
+    Generates SQL filter clause for agent inclusion/exclusion based on config.
+    
+    Args:
+        table_alias: The table alias used in the query (default: 'T')
+        
+    Returns:
+        SQL string starting with ' AND ...' or empty string.
+    """
+    config = _load_config_data()
+    filters = config.get("filters", {})
+    
+    # helper to clean list
+    def clean_list(s: str) -> List[str]:
+        if not s: return []
+        return [x.strip() for x in s.split(',') if x.strip()]
+
+    included = clean_list(filters.get("agents_included", ""))
+    excluded = clean_list(filters.get("agents_excluded", ""))
+    
+    # Included takes precedence
+    if included:
+        agents_str = ", ".join([f"'{a}'" for a in included])
+        return f" AND JSON_VALUE({table_alias}.full_request.labels.adk_agent_name) IN ({agents_str})"
+    
+    if excluded:
+        agents_str = ", ".join([f"'{a}'" for a in excluded])
+        return f" AND JSON_VALUE({table_alias}.full_request.labels.adk_agent_name) NOT IN ({agents_str})"
+        
+    return ""
+
+
+@trace_span()
 def get_analysis_config() -> str:
     """Reads the analysis configuration from config files (.json).
     
@@ -3506,38 +3702,23 @@ def get_analysis_config() -> str:
     """
     logging.info("[TOOL CALL-get_analysis_config] get_analysis_config()")
     try:
-        # Assuming the config file is in the parent directory of agents/latency_analyzer
-        # agents/latency_analyzer/utils.py -> ../../autonomous_analysis_90d.json
-        config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "autonomous_analysis_90d.json")
+        config = _load_config_data()
         
-        if not os.path.exists(config_path):
-             # Fallback to current directory or relative path if running from root
-             config_path = "autonomous_analysis_90d.json"
-             
-        if not os.path.exists(config_path):
-            error_msg = f"Config file not found at {config_path}"
-            logging.error(error_msg)
-            return json.dumps({"error": error_msg})
-
-        with open(config_path, 'r') as f:
-            data = json.load(f)
-            # Return only the config section if it exists, otherwise the whole file
-            config = data.get("config", data)
-            
-            # Log configuration settings for visibility
-            logging.info("=" * 80)
-            logging.info("ANALYSIS CONFIGURATION")
-            logging.info("=" * 80)
-            logging.info(f"Config file: {config_path}")
-            logging.info(f"Time Period: {config.get('time_period_days', 'NOT SET')}")
-            logging.info(f"Analysis Scope: {config.get('analysis_scope', 'NOT SET')}")
-            logging.info(f"Target Mean Latency: {config.get('kpis', {}).get('mean_latency_target', 'NOT SET')}s")
-            logging.info(f"Target P95 Latency: {config.get('kpis', {}).get('p95_latency_target', 'NOT SET')}s")
-            logging.info(f"Num Slowest Queries: {config.get('num_slowest_queries', 'NOT SET')}")
-            logging.info(f"Agent Filter: {config.get('agent_name', 'None (all agents)')}")
-            logging.info("=" * 80)
-            
-            return json.dumps(config)
+        # Log configuration settings for visibility
+        logging.info("=" * 80)
+        logging.info("ANALYSIS CONFIGURATION")
+        logging.info("=" * 80)
+        logging.info(f"Time Period: {config.get('time_period_days', 'NOT SET')}")
+        logging.info(f"Analysis Scope: {config.get('analysis_scope', 'NOT SET')}")
+        logging.info(f"Target Mean Latency: {config.get('kpis', {}).get('mean_latency_target', 'NOT SET')}s")
+        logging.info(f"Target P95 Latency: {config.get('kpis', {}).get('p95_latency_target', 'NOT SET')}s")
+        logging.info(f"Num Slowest Queries: {config.get('num_slowest_queries', 'NOT SET')}")
+        logging.info(f"Agent Filter: {config.get('agent_name', 'None (all agents)')}")
+        logging.info(f"Global Filter Included: {config.get('filters', {}).get('agents_included', 'None')}")
+        logging.info(f"Global Filter Excluded: {config.get('filters', {}).get('agents_excluded', 'None')}")
+        logging.info("=" * 80)
+        
+        return json.dumps(config)
     except Exception as e:
         error_msg = f"Error reading config: {str(e)}"
         logging.error(error_msg)
@@ -3576,6 +3757,11 @@ def analyze_thinking_overhead(
         if agent_name:
             where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
         
+        # Apply global agent filters
+        global_filter = _get_global_agent_filter("T")
+        if global_filter:
+            where_clauses.append(global_filter.lstrip(" AND "))
+            
         where_clause = " AND ".join(where_clauses)
         
         # Build multi-table source
@@ -3680,6 +3866,11 @@ def detect_compute_inefficiency(
         if agent_name:
             where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
         
+        # Apply global agent filters
+        global_filter = _get_global_agent_filter("T")
+        if global_filter:
+            where_clauses.append(global_filter.lstrip(" AND "))
+            
         where_clause = " AND ".join(where_clauses)
         
         tables = get_table_list()

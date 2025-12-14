@@ -59,7 +59,10 @@ from .utils import (
     fetch_slow_queries_batch,
     fetch_fastest_queries,
     # Time period comparison
-    compare_time_periods
+    fetch_fastest_queries,
+    # Time period comparison
+    compare_time_periods,
+    verify_data_access
 )
 
 
@@ -217,7 +220,9 @@ def build_dimension_team(dimension_name: str) -> SequentialAgent:
             get_hourly_model_latency_heatmap,
             # Configuration
             get_analysis_config,
-            get_analysis_metadata
+            get_analysis_config,
+            get_analysis_metadata,
+            verify_data_access
         ],
         generate_content_config=CONTENT_CONFIG,
         output_key=KEY_DOC_OUTPUT,

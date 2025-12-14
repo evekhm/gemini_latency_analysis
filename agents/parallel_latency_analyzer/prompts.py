@@ -230,9 +230,9 @@ If the Strategist asks about... YOU MUST RUN...
   - **PREFERRED**: `fetch_slow_queries_batch(20)` - Fetch multiple slow queries in ONE call
     - Use case: When you need to analyze 5-20 slow queries with full request/response content
     - Benefit: Avoids sequential LLM calls that can timeout. Much faster and more reliable.
-    - **Query Preview Analysis**: The tool returns a `query_preview` field. Use this to:
+    - **Query Analysis**: Use the returned details to:
       1. **Group identical queries**: Count how many times the exact same question appears
-      2. **Highlight differences**: Identify distinct query patterns (e.g., "5 queries about X, 3 about Y")
+      2. **Highlight differences**: Identify distinct query patterns
       3. **Report duplicates**: Explicitly mention if the slow queries are repetitive or diverse
   - **AVOID**: `fetch_single_query(request_id)` - Only for 1-2 specific examples
     - WARNING: Do NOT call this function multiple times in sequence. Use batch instead.
@@ -316,6 +316,20 @@ Your goal is to write a single, polished Markdown section for the Final Latency 
     - **Areas for Expert Review**: Explicitly list deep-dive areas that were identified but require human/expert inspection (e.g., "Ambiguous 5s delay in 'writer' agent requires manual trace").
     - **Data Tables**: The mandatory tables defined below.
 
+**TRUSTED EVIDENCE LIBRARY:**
+Use trusted sources to back up your recommendations. Cite them using Markdown links:
+For example:
+*   **KV Cache & Memory**: [NVIDIA Technical Blog: Efficient LLM Serving](https://developer.nvidia.com/blog/mastering-llm-techniques-inference-optimization/) (explains why `maxOutputTokens` reserves memory)
+*   **Latency & Batching**: [Databricks: LLM Inference Performance Engineering](https://www.databricks.com/blog/2023/09/19/llm-inference-performance-engineering-best-practices.html) (confirms impact of `max_new_tokens` on memory/latency)
+*   **Internal Fragmentation**: [vLLM: PagedAttention Paper](https://arxiv.org/abs/2309.06180) (authoritative source on memory waste from over-provisioning)
+*   **Thinking Overhead**: [Google Cloud: Gemini Thinking Models](https://cloud.google.com/vertex-ai/generative-ai/docs/multimodal/thinking-models) (official documentation on thinking process)
+
+**GUIDELINES FOR RECOMMENDATIONS:**
+- **Evidence-Based**: Every recommendation MUST include a citation if applicable.
+    - *Example*: "Reduce `maxOutputTokens` to prevent memory fragmentation, as excessive reservation reduces batch size and increases queuing latency ([NVIDIA](https://developer.nvidia.com/blog/mastering-llm-techniques-inference-optimization/))."
+- **Model-Specific**: Recommendations MUST be model-specific. Check the "model" field.
+- **Actionable**: Give specific numbers (e.g., "Reduce from 8192 to 2048").
+
 **MANDATORY TABLE FORMATS:**
 If your dimension corresponds to one of these sections, you MUST produce the table exactly as described:
 
@@ -333,9 +347,7 @@ If your dimension corresponds to one of these sections, you MUST produce the tab
 
 3.  **"Slow Query Deep Dive"**:
     -   Table 1: **"Slowest Queries Analysis"** (Top 20).
-    -   Columns: Rank, Request ID, Latency, Agent Name, Query Example (Preview), Input Tokens, Output Tokens, Total Tokens.
-    -   **CRITICAL**: The "Query Example" column MUST show the first 100 characters of the actual user query (from query_preview field).
-    -   This provides concrete context about what types of queries are slow.
+    -   Columns: Rank, Request ID, Latency, Agent Name, Input Tokens, Output Tokens, Total Tokens.
     -   **Key Observations**:
       - Describe any patterns in the slowest queries
       - Note common characteristics like token sizes, agents, query types, etc.
@@ -377,13 +389,12 @@ Call `get_analysis_metadata()` to get actual environment values (project_id, dat
 **MANDATORY METADATA HEADER:**
 ALL reports MUST start with this exact metadata header structure:
 
-```markdown
 # Autonomous Latency Analysis Report
 
 **Analysis Metadata:**
 - **Time Range**: [e.g., "Last 90 days" or specific date range]
 - **Model**: [Model name if filtered, or "All models"]
-- **Agent**: [Agent name if filtered, or "All agents"]
+- **Agent**: [If get_analysis_metadata().agents_included is not empty, list them. Else if get_analysis_metadata().agents_excluded is not empty, say 'All except [excluded]'. Else 'All agents']
 - **Project ID**: [from get_analysis_metadata().project_id]
 - **Dataset**: [from get_analysis_metadata().dataset]
 - **Tables**: [from get_analysis_metadata().tables - list all tables]
@@ -418,7 +429,7 @@ ALL reports MUST start with this exact metadata header structure:
     -   "KPI Compliance & Overall Statistics"
     -   "Token Usage and Correlation"
     -   "Model & Agent Performance Comparison" (MUST include the **Per-Agent Model Matrix**)
-    -   "Slowest Queries Analysis" (MUST include the **Top 20 Table with Query Examples**)
+    -   "Slowest Queries Analysis" (MUST include the **Top 20 Table**)
     -   "Hourly & Daily Patterns"
     -   "Micro-Burst & Queuing Analysis"
     -   "Cost & Efficiency Analysis" (CRITICAL for H8/H10 - must include GenerationConfig analysis)
@@ -447,13 +458,13 @@ ALL reports MUST start with this exact metadata header structure:
 
 - **Slowest Queries Table** (MANDATORY):
   - Must include query examples (first 100 chars of actual query text)
-  - Format: | Rank | Request ID | Latency (s) | Agent Name | Query Example | Input Tokens | Output Tokens | Total Tokens |
+  - Format: | Rank | Request ID | Latency (s) | Agent Name | Input Tokens | Output Tokens | Total Tokens |
   - Sort by latency descending
 
 **Critical Rules:**
 -   **Do NOT skip the "Per-Agent Model Usage and Performance Matrix"**. If it's missing in the sections, add a placeholder "[ERROR: Matrix Missing]".
 -   **Do NOT skip the "Hypothesis Testing Results"**. You must construct it from the findings in the sections.
--   **Do NOT skip the "Slowest Queries Table with Query Examples"**. This is mandatory for traceability.
+-   **Do NOT skip the "Slowest Queries Table"**. This is mandatory for traceability.
 -   **Do NOT hallucinate new data**. Only use what is in the sections or from calling the metadata tool.
 -   **DO call `get_analysis_metadata()` first** to get real values for the header.
 """
