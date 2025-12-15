@@ -18,7 +18,7 @@ from google.adk.agents.callback_context import CallbackContext
 from google.adk.models import LlmResponse
 import google.auth
 
-from .telemetry import trace_span
+from .telemetry import trace_span, get_tool_stats
 
 load_dotenv()
 _, project = google.auth.default()
@@ -293,6 +293,7 @@ def parse_time_range(time_range: str) -> str:
     return json.dumps({"start_date": start.strftime('%Y-%m-%d %H:%M:%S'), "end_date": end.strftime('%Y-%m-%d %H:%M:%S')})
 
 
+@trace_span()
 def get_analysis_metadata() -> str:
     """
     Get metadata about the analysis environment for report headers.
@@ -331,6 +332,7 @@ def get_analysis_metadata() -> str:
     return json.dumps(metadata, cls=AnalysisEncoder)
 
 
+@trace_span()
 def verify_data_access() -> str:
     """
     Verifies BigQuery configuration and data access.
@@ -379,6 +381,12 @@ def verify_data_access() -> str:
         df = execute_bigquery(query, timeout=30)
         
         if not df.empty:
+            # Ensure timestamps are datetime objects (handling cache string serialization)
+            if 'first_log' in df.columns:
+                df['first_log'] = pd.to_datetime(df['first_log'], errors='coerce')
+            if 'last_log' in df.columns:
+                df['last_log'] = pd.to_datetime(df['last_log'], errors='coerce')
+
             # Aggregate results across all tables
             total_rows = df['total_rows'].sum()
             first_log = df['first_log'].min()
@@ -479,6 +487,39 @@ def execute_bigquery(query: str, timeout: int = 1200) -> pd.DataFrame:
         if "timeout" in str(e).lower():
             logging.error(f"BigQuery query timed out after {timeout} seconds")
         raise
+
+@trace_span()
+def get_tool_usage_report() -> str:
+    """
+    Get a summary of tool usage statistics for the report.
+    
+    Returns:
+        JSON string with tool execution counts, average durations, and descriptions.
+    """
+    stats = get_tool_stats()
+    report = []
+    
+    for name, data in stats.items():
+        if data['calls'] == 0:
+            continue
+            
+        durations = data.get('durations', [])
+        avg_time = sum(durations) / len(durations) if durations else 0
+        max_time = max(durations) if durations else 0
+        total_time = sum(durations)
+        
+        report.append({
+            "tool": name,
+            "calls": data['calls'],
+            "avg_time_s": round(avg_time, 3),
+            "max_time_s": round(max_time, 3),
+            "total_time_s": round(total_time, 3),
+            "errors": data.get('errors', 0),
+            "description": data.get('description', 'No description')
+        })
+        
+    return json.dumps(report, indent=2)
+
 
 
 def build_multi_table_source(where_clause: str, select_suffix: str = "") -> str:
@@ -686,6 +727,94 @@ def get_overall_statistics(
         
     except Exception as e:
         logging.error(f"Error in get_overall_statistics: {str(e)}")
+        return json.dumps({"error": str(e)})
+
+
+@trace_span()
+def get_trace_details(trace_id: str) -> str:
+    """
+    Get all log entries associated with a specific trace ID.
+    Useful for deep diving into a specific request flow or visualizing the timeline.
+    
+    Args:
+        trace_id: The unique trace identifier (e.g. from Cloud Trace or logs)
+        
+    Returns:
+        JSON string with list of log entries for the trace
+    """
+    logging.info(f"[TOOL CALL-get_trace_details] get_trace_details(trace_id='{trace_id}')")
+    try:
+        # Tables logic
+        tables = get_table_list()
+        
+        where_clause = f"trace LIKE '%{trace_id}%' OR JSON_VALUE(otel_log.traceId) = '{trace_id}'"
+        
+        # We need to robustly handle the missing 'trace' column case in legacy data
+        # Since we can't easily check schema here, we might just try querying.
+        # But if 'trace' column doesn't exist, this query fails.
+        # We'll rely on the view having the column or using a safer query if possible.
+        # For now, let's assume the view or table has 'trace' or we query robustly.
+        pass
+        
+        # Actually, let's just query the VIEW if it exists?
+        # The VIEW_ID is `llm_logging_view`.
+        view_ref = f"`{PROJECT_ID}.{DATASET_ID}.llm_logging_view`"
+        
+        # Try querying the view first (best practice)
+        query = f"""
+        SELECT
+            request_id,
+            logging_time,
+            latency_seconds,
+            model,
+            agent_name,
+            input_tokens,
+            output_tokens,
+            thought_tokens,
+            total_tokens,
+            trace
+        FROM {view_ref}
+        WHERE trace LIKE '%{trace_id}%'
+        ORDER BY logging_time ASC
+        LIMIT 100
+        """
+        
+        try:
+            df = execute_bigquery(query)
+        except Exception:
+            # Fallback to raw tables if view query fails (e.g. view not updated yet)
+            # This fallback might also fail if 'trace' column completely missing
+            table_queries = []
+            for table in tables:
+                table_queries.append(f"""
+                SELECT 
+                    CAST(request_id AS STRING) as request_id, 
+                    logging_time,
+                    CAST(JSON_EXTRACT_SCALAR(metadata, '$.request_latency') AS FLOAT64) / 1000 AS latency_seconds,
+                    model,
+                    COALESCE(JSON_VALUE(full_request.labels.adk_agent_name), 'unknown') AS agent_name,
+                    -- Try to get trace from standard column or NULL
+                    'unknown' as trace
+                FROM `{PROJECT_ID}.{DATASET_ID}.{table}`
+                -- Metadata match as fallback for older logs?
+                WHERE JSON_VALUE(otel_log.traceId) = '{trace_id}' 
+                """)
+            
+            full_query = "\nUNION ALL\n".join(table_queries) + "\nORDER BY logging_time ASC LIMIT 100"
+            df = execute_bigquery(full_query)
+
+        if df.empty:
+            return json.dumps({"message": f"No logs found for trace_id: {trace_id}"})
+            
+        result = {
+            "trace_id": trace_id,
+            "entry_count": len(df),
+            "entries": df.to_dict(orient='records')
+        }
+        return json.dumps(result, cls=AnalysisEncoder)
+
+    except Exception as e:
+        logging.error(f"Error in get_trace_details: {str(e)}")
         return json.dumps({"error": str(e)})
 
 
@@ -1242,8 +1371,11 @@ def get_agent_comparison(
           AVG(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) AS avg_latency,
           APPROX_QUANTILES(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000, 100)[OFFSET(95)] AS p95_latency,
           AVG(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64)) AS avg_input_tokens,
+          APPROX_QUANTILES(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64), 100)[OFFSET(95)] AS p95_input_tokens,
           AVG(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64)) AS avg_output_tokens,
+          APPROX_QUANTILES(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64), 100)[OFFSET(95)] AS p95_output_tokens,
           AVG(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.thoughtsTokenCount) AS INT64)) AS avg_thought_tokens,
+          APPROX_QUANTILES(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.thoughtsTokenCount) AS INT64), 100)[OFFSET(95)] AS p95_thought_tokens,
           AVG(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64)) AS avg_total_tokens,
           SUM(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64)) AS total_tokens,
           AVG(
@@ -1289,8 +1421,12 @@ def get_agent_comparison(
                 "avg_latency": float(row['avg_latency']),
                 "p95_latency": float(row['p95_latency']) if pd.notna(row['p95_latency']) else None,
                 "avg_input_tokens": float(row['avg_input_tokens']) if pd.notna(row['avg_input_tokens']) else None,
+                "p95_input_tokens": float(row['p95_input_tokens']) if pd.notna(row['p95_input_tokens']) else None,
                 "avg_output_tokens": float(row['avg_output_tokens']) if pd.notna(row['avg_output_tokens']) else None,
+                "p95_output_tokens": float(row['p95_output_tokens']) if pd.notna(row['p95_output_tokens']) else None,
                 "avg_thought_tokens": float(avg_brain_tokens),
+                "p95_thought_tokens": float(row['p95_thought_tokens']) if pd.notna(row['p95_thought_tokens']) else None,
+                "avg_total_tokens": float(row['avg_total_tokens']) if pd.notna(row['avg_total_tokens']) else None,
                 "thought_output_ratio": float(thought_ratio),
                 "avg_tpot": float(row['avg_tpot']) if pd.notna(row['avg_tpot']) else None,
                 "total_tokens": int(row['total_tokens']) if pd.notna(row['total_tokens']) else None,
@@ -1535,8 +1671,11 @@ def get_agent_model_matrix(
           AVG(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) AS avg_latency,
           APPROX_QUANTILES(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000, 100)[OFFSET(95)] AS p95_latency,
           AVG(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64)) AS avg_input_tokens,
+          APPROX_QUANTILES(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64), 100)[OFFSET(95)] AS p95_input_tokens,
           AVG(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64)) AS avg_output_tokens,
+          APPROX_QUANTILES(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64), 100)[OFFSET(95)] AS p95_output_tokens,
           AVG(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.thoughtsTokenCount) AS INT64)) AS avg_thought_tokens,
+          APPROX_QUANTILES(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.thoughtsTokenCount) AS INT64), 100)[OFFSET(95)] AS p95_thought_tokens,
           AVG(
              CASE 
                 WHEN SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) > 0 
@@ -1576,8 +1715,11 @@ def get_agent_model_matrix(
                 "avg_latency": float(row['avg_latency']),
                 "p95_latency": float(row['p95_latency']) if pd.notna(row['p95_latency']) else None,
                 "avg_input_tokens": float(row['avg_input_tokens']) if pd.notna(row['avg_input_tokens']) else None,
+                "p95_input_tokens": float(row['p95_input_tokens']) if pd.notna(row['p95_input_tokens']) else None,
                 "avg_output_tokens": float(row['avg_output_tokens']) if pd.notna(row['avg_output_tokens']) else None,
+                "p95_output_tokens": float(row['p95_output_tokens']) if pd.notna(row['p95_output_tokens']) else None,
                 "avg_thought_tokens": float(row['avg_thought_tokens']) if pd.notna(row['avg_thought_tokens']) else None,
+                "p95_thought_tokens": float(row['p95_thought_tokens']) if pd.notna(row['p95_thought_tokens']) else None,
                 "avg_tpot": float(row['avg_tpot']) if pd.notna(row['avg_tpot']) else None,
                 "publisher": row['publisher'] if pd.notna(row['publisher']) else 'unknown'
             }
@@ -2958,17 +3100,7 @@ def fetch_slow_queries_batch(
           SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) AS output_token_count,
           SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64) AS prompt_token_count,
           SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64) AS total_token_count,
-          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64) AS total_token_count,
-          -- Extract last user message text (robustly via ARRAY/LIMIT and ignore empty messages)
-          COALESCE(ARRAY(
-            SELECT 
-              (SELECT STRING_AGG(JSON_VALUE(p, '$.text'), ' ') FROM UNNEST(JSON_QUERY_ARRAY(c, '$.parts')) AS p)
-            FROM UNNEST(COALESCE(JSON_QUERY_ARRAY(T.full_request, '$.contents'), [])) AS c WITH OFFSET AS off
-            WHERE JSON_VALUE(c, '$.role') = 'user'
-            AND LENGTH((SELECT STRING_AGG(JSON_VALUE(p, '$.text'), ' ') FROM UNNEST(JSON_QUERY_ARRAY(c, '$.parts')) AS p)) > 0
-            ORDER BY off DESC
-            LIMIT 1
-          )[SAFE_OFFSET(0)], 'No user query text found') AS query_preview
+          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64) AS total_token_count
         FROM
           {union_source}
         ORDER BY request_latency_seconds DESC
@@ -3004,8 +3136,7 @@ def fetch_slow_queries_batch(
                 "thoughts_token_count": int(row['thoughts_token_count']) if pd.notna(row['thoughts_token_count']) else None,
                 "output_token_count": int(row['output_token_count']) if pd.notna(row['output_token_count']) else None,
                 "prompt_token_count": int(row['prompt_token_count']) if pd.notna(row['prompt_token_count']) else None,
-                "total_token_count": int(row['total_token_count']) if pd.notna(row['total_token_count']) else None,
-                "query_preview": row['query_preview'].replace('\n', ' ').replace('\r', '').replace('|', ' ') if pd.notna(row['query_preview']) else None
+                "total_token_count": int(row['total_token_count']) if pd.notna(row['total_token_count']) else None
             }
             queries.append(record)
         
@@ -3416,9 +3547,11 @@ def check_kpi_compliance(
             
         if mean_latency_target is None:
             mean_latency_target = agent_overrides.get("mean_latency_target", config.get("kpis", {}).get("mean_latency_target", 3.0))
+        mean_latency_target = float(mean_latency_target)
             
         if p95_latency_target is None:
             p95_latency_target = agent_overrides.get("p95_latency_target", config.get("kpis", {}).get("p95_latency_target", 5.0))
+        p95_latency_target = float(p95_latency_target)
 
         # Reuse get_overall_statistics to get current global metrics
         stats_json = get_overall_statistics(time_range=time_range, agent_name=agent_name, model_name=model_name)
@@ -3462,8 +3595,8 @@ def check_kpi_compliance(
                     
                     # Determine target for this agent
                     # First check specific override, then global default
-                    a_target_mean = per_agent_config.get(a_name, {}).get("mean_latency_target", mean_latency_target)
-                    a_target_p95 = per_agent_config.get(a_name, {}).get("p95_latency_target", p95_latency_target)
+                    a_target_mean = float(per_agent_config.get(a_name, {}).get("mean_latency_target", mean_latency_target))
+                    a_target_p95 = float(per_agent_config.get(a_name, {}).get("p95_latency_target", p95_latency_target))
                     
                     mean_status = "pass" if a_mean <= a_target_mean else "fail"
                     p95_status = "pass" if a_p95 and a_p95 <= a_target_p95 else "fail" if a_p95 else "unknown"
@@ -4392,6 +4525,7 @@ def set_dimensions_and_transfer(tool_context: ToolContext, dimensions: list[str]
     tool_context.actions.transfer_to_agent = "dimension_processing_loop"
     return {"status": "success", "message": f"Prepared to process dimensions: {dimensions}."}
 
+@trace_span()
 def trigger_latency_parallel_report(tool_context: ToolContext) -> dict:
     """Transfers control to the complete_report_generator for parallel processing."""
     logging.info("[TOOL CALL-trigger_latency_parallel_report] trigger_latency_parallel_report()")
@@ -4400,6 +4534,7 @@ def trigger_latency_parallel_report(tool_context: ToolContext) -> dict:
     tool_context.actions.transfer_to_agent = "report_orchestrator"
     return {"status": "success", "message": "Starting complete report generation in parallel."}
 
+@trace_span()
 def process_latency_question(tool_context: ToolContext, dimension_name: str, user_question: str) -> dict:
     """Sets up the session state to process a single user-provided question within a specific dimension."""
     logging.info(f"[TOOL CALL-process_latency_question] process_latency_question(dimension_name='{dimension_name}', user_question='{user_question}')")

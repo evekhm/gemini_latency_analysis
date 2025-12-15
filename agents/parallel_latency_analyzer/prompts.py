@@ -151,6 +151,8 @@ You MUST include these specific directives if the dimension matches:
 2.  **"Model & Agent Performance Comparison"**:
     -   "Generate the full Agent-Model Matrix using `get_agent_model_matrix`."
     -   "Compare Model A vs Model B performance using `get_model_comparison`."
+    -   "Generate per-agent token usage statistics (Input/Output/Thought) using `get_agent_comparison`."
+    -   "QUESTION: What is the token usage breakdown per agent? Run `get_agent_comparison` to populate the mandatory Token Usage table."
 
 3.  **"Slow Query Deep Dive"**:
     -   "Fetch the top 20 slowest queries using `fetch_slow_queries_batch` (PREFERRED for batch analysis)."
@@ -325,7 +327,7 @@ For example:
 *   **Thinking Overhead**: [Google Cloud: Gemini Thinking Models](https://cloud.google.com/vertex-ai/generative-ai/docs/multimodal/thinking-models) (official documentation on thinking process)
 
 **GUIDELINES FOR RECOMMENDATIONS:**
-- **Evidence-Based**: Every recommendation MUST include a citation if applicable.
+- **Evidence-Based**: Every recommendation should include a citation if applicable.
     - *Example*: "Reduce `maxOutputTokens` to prevent memory fragmentation, as excessive reservation reduces batch size and increases queuing latency ([NVIDIA](https://developer.nvidia.com/blog/mastering-llm-techniques-inference-optimization/))."
 - **Model-Specific**: Recommendations MUST be model-specific. Check the "model" field.
 - **Actionable**: Give specific numbers (e.g., "Reduce from 8192 to 2048").
@@ -341,9 +343,15 @@ If your dimension corresponds to one of these sections, you MUST produce the tab
 2.  **"Model & Agent Performance..."**:
     -   Table 1: **"Overall Model Performance"** (Columns: Model, Total Calls, Avg Latency, P95, Avg TPOT, Efficiency).
     -   Table 2: **"Per-Agent Model Usage and Performance Matrix"** (The Big Matrix).
+    -   Columns: Agent, Model, Calls, Avg/P95 Latency, Avg/P95 Input, Avg/P95 Output, Avg/P95 Thought.
     -   Highlight fastest vs slowest models.
     -   Note which agents use which models.
     -   Identify model switching patterns if detected.
+    -   Table 3: **"Agent Token Usage Statistics"** (Columns: Agent Name, Avg Input, P95 Input, Avg Output, P95 Output, Avg Thought, P95 Thought, Avg Total).
+        -   Sort ALPHABETICALLY by Agent Name.
+        -   Show the breakdown of Input/Output/Thought tokens for each agent.
+        -   **THIS TABLE IS MANDATORY. DO NOT SKIP.**
+        -   **IF DATA IS MISSING:** State "Data not available" but DRAW THE HEADER.
 
 3.  **"Slow Query Deep Dive"**:
     -   Table 1: **"Slowest Queries Analysis"** (Top 20).
@@ -384,6 +392,7 @@ Stitch them together into a cohesive "Autonomous Latency Analysis Report" follow
 
 **CRITICAL FIRST STEP:**
 Call `get_analysis_metadata()` to get actual environment values (project_id, dataset, tables, version, timestamp).
+Call `get_tool_usage_report()` to retrieve system performance metrics.
 **DO NOT** make up or hallucinate these values.
 
 **MANDATORY METADATA HEADER:**
@@ -438,6 +447,10 @@ ALL reports MUST start with this exact metadata header structure:
     - Prioritize: High/Medium/Low priority
     - Include specific implementation steps
     - Provide expected impact estimates where possible
+10. **Tool Execution Stats**:
+    -   Table of tool usage from `get_tool_usage_report()`
+    -   Columns: Tool Name, Description, Calls, Avg Time (s), Total Time (s)
+    -   Sort by Total Time Descending
 
 **CRITICAL SECTION REQUIREMENTS:**
 
@@ -467,6 +480,7 @@ ALL reports MUST start with this exact metadata header structure:
 -   **Do NOT skip the "Slowest Queries Table"**. This is mandatory for traceability.
 -   **Do NOT hallucinate new data**. Only use what is in the sections or from calling the metadata tool.
 -   **DO call `get_analysis_metadata()` first** to get real values for the header.
+-   **DO call `get_tool_usage_report()`** to populate the stats section.
 """
 
 
@@ -486,3 +500,22 @@ Your goal is to save the report that has just been generated.
 2. Output the filenames and location returned by the tool.
 """
 
+
+MARKDOWN_CORRECTOR_PROMPT = """
+You are the Markdown Corrector.
+Your goal is to fix formatting errors in the input Markdown report, specifically broken tables and headers.
+
+**Input:**
+- The raw Markdown content of the analysis report.
+
+**Task:**
+1.  **Analyze** the markdown structure.
+2.  **Fix** the following common issues:
+    -   **Broken Tables**: Ensure all tables have a valid header row, a separator row (e.g., `|---|---|`), and that rows are not collapsed into a single line. Ensure there is an empty newline BEFORE and AFTER every table.
+    -   **Missing Newlines**: Ensure headers (`#`, `##`) are preceded by an empty line.
+    -   **Trailing Whitespace**: Remove excessive blank lines (more than 2).
+3.  **Preserve Content**: DO NOT change any numbers, text, or data values. Only fix the formatting syntax.
+
+**Output:**
+- The fully corrected clean Markdown string.
+"""

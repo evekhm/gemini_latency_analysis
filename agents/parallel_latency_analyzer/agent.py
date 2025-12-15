@@ -62,7 +62,8 @@ from .utils import (
     fetch_fastest_queries,
     # Time period comparison
     compare_time_periods,
-    verify_data_access
+    verify_data_access,
+    get_tool_usage_report
 )
 
 
@@ -73,7 +74,8 @@ from .prompts import (
     CRITIQUE_PROMPT,
     SECTION_WRITER_PROMPT,
     FINAL_REPORT_ASSEMBLER_PROMPT,
-    REPORT_SAVER_PROMPT
+    REPORT_SAVER_PROMPT,
+    MARKDOWN_CORRECTOR_PROMPT
 )
 
 load_dotenv()
@@ -222,7 +224,8 @@ def build_dimension_team(dimension_name: str) -> SequentialAgent:
             get_analysis_config,
             get_analysis_config,
             get_analysis_metadata,
-            verify_data_access
+            verify_data_access,
+            save_analysis_report
         ],
         generate_content_config=CONTENT_CONFIG,
         output_key=KEY_DOC_OUTPUT,
@@ -276,15 +279,24 @@ final_report_assembler = LlmAgent(
     description="Combines all individual report sections into the final master document.",
     instruction=FINAL_REPORT_ASSEMBLER_PROMPT,
     generate_content_config=CONTENT_CONFIG,
-    tools=[get_analysis_metadata],
+    tools=[get_analysis_metadata, get_tool_usage_report],
     output_key="FINAL_REPORT_MARKDOWN"
+)
+
+markdown_corrector = LlmAgent(
+    name="markdown_corrector",
+    model=MODEL,
+    description="Fixes markdown formatting and table issues in the final report.",
+    instruction=MARKDOWN_CORRECTOR_PROMPT + "\nInput: content from 'FINAL_REPORT_MARKDOWN'",
+    generate_content_config=CONTENT_CONFIG,
+    output_key="FINAL_REPORT_MARKDOWN_CORRECTED"
 )
 
 report_saver = LlmAgent(
     name="report_saver",
     model=MODEL,
     description="Saves the generated report to a timestamped file.",
-    instruction=REPORT_SAVER_PROMPT,
+    instruction=REPORT_SAVER_PROMPT + "\nInput: content from 'FINAL_REPORT_MARKDOWN_CORRECTED'",
     generate_content_config=types.GenerateContentConfig(temperature=0),
     tools=[save_analysis_report]
 )
@@ -310,6 +322,7 @@ report_orchestrator = SequentialAgent(
     description="Orchestrator that generates the report and then automatically saves it.",
     sub_agents=[
         complete_report_generator,
+        markdown_corrector,
         report_saver
     ]
 )

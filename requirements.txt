@@ -23,3 +23,5 @@ opentelemetry-exporter-otlp-proto-grpc
 opentelemetry-instrumentation-vertexai>=2.0b0
 opentelemetry-exporter-gcp-trace
 opentelemetry-sdk
+agentops
+google-generativeai

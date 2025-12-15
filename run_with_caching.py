@@ -5,7 +5,7 @@ Autonomous Latency Analysis Runner with ADK Context Caching
 This script runs the parallel latency analyzer with proper ADK Context Caching
 configured at the App level, following ADK best practices.
 """
-
+import agentops
 import asyncio
 import logging
 import os
@@ -19,6 +19,7 @@ from google.adk.apps.app import App
 from google.adk.cli.utils import logs
 from google.adk.runners import InMemoryRunner
 from google.genai import types
+from opentelemetry import trace
 from agents.parallel_latency_analyzer.telemetry import init_tracer
 
 # Add agents directory to path
@@ -101,7 +102,15 @@ async def run_autonomous_analysis(replay_file_path: str = None):
     print(f"   TTL: {CACHE_CONFIG.ttl_seconds}s ({CACHE_CONFIG.ttl_seconds // 60} minutes)")
     print(f"   Cache Intervals: {CACHE_CONFIG.cache_intervals}")
     print()
-    
+
+    AGENTOPS_API_KEY = os.getenv("AGENTOPS_API_KEY")
+    if AGENTOPS_API_KEY:
+        agentops.init(
+            api_key=AGENTOPS_API_KEY,
+            default_tags=['google adk'],
+            trace_name="agent-analyzer-trace"
+        )
+
     # Create App with context caching
     from parallel_latency_analyzer.agent import parallel_latency_analyzer
     app = App(
@@ -133,7 +142,20 @@ async def run_autonomous_analysis(replay_file_path: str = None):
     print("🚀 Starting autonomous analysis...")
     print()
     
+    
+    
     # Run the analysis for each query
+    import time
+    start_time = time.time()
+    
+    # Track token usage
+    total_input_tokens = 0
+    total_output_tokens = 0
+    
+    # Track tool usage
+    from collections import Counter
+    tool_usage = Counter()
+    
     try:
         for query in queries:
             print(f"➤ Sending query: {query}")
@@ -152,6 +174,26 @@ async def run_autonomous_analysis(replay_file_path: str = None):
                 # Print agent responses
                 if hasattr(event, 'content') and event.content:
                     print(f"[{event.author}] {event.content}")
+                
+                # Accumulate usage from event metadata
+                if hasattr(event, 'usage_metadata') and event.usage_metadata:
+                    usage = event.usage_metadata
+                    # Handle object or dict access
+                    if hasattr(usage, 'prompt_token_count'):
+                        total_input_tokens += (usage.prompt_token_count or 0)
+                    if hasattr(usage, 'candidates_token_count'):
+                        total_output_tokens += (usage.candidates_token_count or 0)
+                    # Note: We rely on the event stream potentially sending usage 
+                    # for each turn. This might count duplicates if multiple events share usage.
+                    # Typically usage is sent once per generation completion.
+
+                # Track tool calls from model output items
+                if hasattr(event, 'content') and event.content and hasattr(event.content, 'parts'):
+                    for part in event.content.parts:
+                        if hasattr(part, 'function_call') and part.function_call:
+                             tool_name = part.function_call.name
+                             tool_usage[tool_name] += 1
+                    
             print("-" * 40)
     
     except KeyboardInterrupt:
@@ -162,12 +204,75 @@ async def run_autonomous_analysis(replay_file_path: str = None):
         import traceback
         traceback.print_exc()
         sys.exit(1)
-    
-    print()
-    print("=" * 80)
-    print("  Analysis Complete!")
+    finally:
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        total_tokens = total_input_tokens + total_output_tokens
+        
+        print()
+        print("=" * 80)
+        print("  Analysis Complete!")
+        print("=" * 80)
+        
+        print("\n📊 Session Summary")
+        print(f"   ⏱️  Elapsed Time: {elapsed_time:.2f}s ({elapsed_time/60:.2f}m)")
+        print(f"   🔢 Total Tokens: {total_tokens:,}")
+        print(f"      - Input:  {total_input_tokens:,}")
+        print(f"      - Output: {total_output_tokens:,}")
+
+            
     print("  Check reports/ for the analysis report")
     print("=" * 80)
+
+    # NEW: Append Execution Summary to the generated report
+    try:
+        # Find the latest report file in reports/ directory based on modification time
+        reports_dir = Path(__file__).parent / "reports"
+        if reports_dir.exists():
+            # Get all md files
+            report_files = list(reports_dir.glob("*.md"))
+            if report_files:
+                # Sort by modification time, newest first
+                latest_report = max(report_files, key=lambda p: p.stat().st_mtime)
+                
+                # Double check it was modified recently (e.g. within the last minute)
+                # to avoid appending to an old report if this run failed to generate one.
+                # But for now, we'll just trust it's the right one or check if it matches our timestamp logic if possible.
+                # Actually, simpler: just append to the *newest* file.
+                
+                summary_md = f"""
+## Agent Execution Summary
+
+| Metric | Value |
+| :--- | :--- |
+| **Elapsed Time** | {elapsed_time:.2f}s ({elapsed_time/60:.2f}m) |
+| **Total Tokens** | {total_tokens:,} |
+| **Input Tokens** | {total_input_tokens:,} |
+| **Output Tokens** | {total_output_tokens:,} |
+
+### Tool Usage Statistics
+
+| Tool Name | Count |
+| :--- | :--- |
+"""
+                # Add rows for tool usage
+                for tool, count in tool_usage.most_common():
+                    summary_md += f"| `{tool}` | {count} |\n"
+                    
+                summary_md += f"\n*Generated by: {APP_NAME}*\n"
+
+                with open(latest_report, "a") as f:
+                    f.write(summary_md)
+                
+                print(f"✓ Appended execution summary to: {latest_report.name}")
+            else:
+                print("⚠️ No report files found to append summary.")
+        else:
+             print("⚠️ Reports directory not found.")
+             
+    except Exception as e:
+        print(f"⚠️ Failed to append summary to report: {e}")
+
 
 
 def main():
@@ -196,13 +301,38 @@ def main():
         formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s')
         file_handler.setFormatter(formatter)
         
+        # Define TraceIdFilter
+        class TraceIdFilter(logging.Filter):
+            def filter(self, record):
+                span = trace.get_current_span()
+                if span == trace.INVALID_SPAN:
+                    return True
+                ctx = span.get_span_context()
+                if ctx == trace.INVALID_SPAN_CONTEXT:
+                    return True
+                
+                project_id = os.getenv('PROJECT_ID')
+                if project_id:
+                    # Inject trace info into the record for Cloud Logging
+                    record.trace = f"projects/{project_id}/traces/{trace.format_trace_id(ctx.trace_id)}"
+                    record.span_id = trace.format_span_id(ctx.span_id)
+                    record.trace_sampled = ctx.trace_flags.sampled
+                return True
+
         # Attach to root logger
         root_logger = logging.getLogger()
         root_logger.addHandler(file_handler)
         
+        # Add Trace Filter to propagate trace context to logs
+        trace_filter = TraceIdFilter()
+        root_logger.addFilter(trace_filter)
+        
         # Also attach to 'adk' and 'google' loggers to be safe
         logging.getLogger('adk').addHandler(file_handler)
         logging.getLogger('google').addHandler(file_handler)
+        
+        # Ensure 'adk' logger also gets the filter if it doesn't propagate
+        logging.getLogger('adk').addFilter(trace_filter)
         
         print(f"✓ Created log file: {log_file}")
         
