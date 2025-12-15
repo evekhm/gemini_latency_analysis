@@ -2,7 +2,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agents.latency_analyzer.query_extractor import extract_user_query
+from agents.parallel_latency_analyzer.query_extractor import extract_user_query
 import json
 
 # Case 1: Multi-message (User's first example)

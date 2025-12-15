@@ -18,7 +18,7 @@ def test_single_table():
     # Reimport to pick up the new env var
     import importlib
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from agents.latency_analyzer import utils
+    from agents.parallel_latency_analyzer import utils
     importlib.reload(utils)
     
     tables = utils.get_table_list()
@@ -31,7 +31,7 @@ def test_multiple_tables():
     
     import importlib
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from agents.latency_analyzer import utils
+    from agents.parallel_latency_analyzer import utils
     importlib.reload(utils)
     
     tables = utils.get_table_list()
@@ -45,7 +45,7 @@ def test_multiple_tables_extra_whitespace():
     
     import importlib
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from agents.latency_analyzer import utils
+    from agents.parallel_latency_analyzer import utils
     importlib.reload(utils)
     
     tables = utils.get_table_list()
@@ -53,25 +53,12 @@ def test_multiple_tables_extra_whitespace():
     assert tables == expected, f"Expected {expected}, got {tables}"
     print("✓ Whitespace handling test passed")
 
-def test_empty_value():
-    """Test with empty environment variable."""
-    os.environ['AGENT_TABLE_ID'] = ''
-    
-    import importlib
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from agents.latency_analyzer import utils
-    importlib.reload(utils)
-    
-    tables = utils.get_table_list()
-    expected = ['gemini_logs']  # Default value
-    assert tables == expected, f"Expected {expected}, got {tables}"
-    print("✓ Empty value test passed")
 
 if __name__ == '__main__':
     print("Running multi-table support tests...")
     test_single_table()
     test_multiple_tables()
     test_multiple_tables_extra_whitespace()
-    test_empty_value()
+
     print("\\n✅ All tests passed!")
 

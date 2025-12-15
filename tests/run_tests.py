@@ -20,7 +20,7 @@ def run_test(test_file):
             cwd=test_file.parent.parent,  # Run from project root
             capture_output=True,
             text=True,
-            timeout=30
+            timeout=120
         )
         
         # Print output

@@ -10,7 +10,7 @@ This script tests:
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from agents.latency_analyzer.utils import (
+from agents.parallel_latency_analyzer.utils import (
     get_model_comparison,
     get_agent_model_matrix,
     execute_bigquery
@@ -40,7 +40,7 @@ def test_model_extraction():
     
     # Test query to verify extraction works
     # Handle multi-table configuration by picking the first table
-    from agents.latency_analyzer.utils import get_table_list
+    from agents.parallel_latency_analyzer.utils import get_table_list
     header_table = get_table_list()[0]
     
     query = f"""

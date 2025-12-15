@@ -167,6 +167,8 @@ def get_table_list() -> List[str]:
     Returns:
         List of table names with whitespace stripped
     """
+    if not TABLE_ID:
+        return []
     tables = [table.strip() for table in TABLE_ID.split(',')]
     return [t for t in tables if t]  # Filter out empty strings
 
@@ -3812,6 +3814,7 @@ def analyze_thinking_overhead(
           T.request_latency AS latency,
           T.prompt_token_count AS prompt_token_count,
           T.candidates_token_count AS candidates_token_count,
+          T.thoughts_token_count AS thoughts_token_count,
           T.total_token_count AS total_token_count
         FROM
           `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}` AS T
@@ -3827,17 +3830,11 @@ def analyze_thinking_overhead(
             return json.dumps({"error": "No data found"})
             
         # Calculate thought tokens and ratios
-        # Assuming thought tokens are part of total but not explicit in standardized usageMetadata in some versions,
-        # or we can infer them if total > input + output. 
-        # Note: Some models expose distinct thought tokens, others bundle them.
-        # We'll use max(0, total - input - output) as a proxy for overhead/thought if explicit field missing everywhere.
-        # But actually, Gemini 2.0 Flash thinking model has specific fields. 
-        # For now, we'll use the inference method which aligns with our previous tool updates.
-        
         df['prompt_token_count'] = pd.to_numeric(df['prompt_token_count'], errors='coerce').fillna(0)
         df['candidates_token_count'] = pd.to_numeric(df['candidates_token_count'], errors='coerce').fillna(0)
         df['total_token_count'] = pd.to_numeric(df['total_token_count'], errors='coerce').fillna(0)
-        df['thoughts_token_count'] = (df['total_token_count'] - df['prompt_token_count'] - df['candidates_token_count']).clip(lower=0)
+        df['thoughts_token_count'] = pd.to_numeric(df['thoughts_token_count'], errors='coerce').fillna(0)
+        
         df['thought_output_ratio'] = df.apply(
             lambda row: row['thoughts_token_count'] / row['candidates_token_count'] if row['candidates_token_count'] > 0 else 0, axis=1
         )
