@@ -63,7 +63,8 @@ from .utils import (
     # Time period comparison
     compare_time_periods,
     verify_data_access,
-    get_tool_usage_report
+    get_tool_usage_report,
+    get_subagent_tool_usage
 )
 
 
@@ -86,9 +87,8 @@ cloud_logging_client.setup_logging()
 from google.adk.models.google_llm import Gemini
 
 MODEL_ID = os.getenv('AGENT_MODEL_ID') or os.getenv('MODEL')
-# Fallback if neither is set
-if not MODEL_ID:
-    MODEL_ID = "gemini-1.5-pro-002"
+assert MODEL_ID, "MODEL_ID is not set"
+
 
 MODEL = Gemini(
     model=MODEL_ID,
@@ -225,7 +225,8 @@ def build_dimension_team(dimension_name: str) -> SequentialAgent:
             get_analysis_config,
             get_analysis_metadata,
             verify_data_access,
-            save_analysis_report
+            save_analysis_report,
+            get_subagent_tool_usage
         ],
         generate_content_config=CONTENT_CONFIG,
         output_key=KEY_DOC_OUTPUT,
@@ -342,7 +343,8 @@ parallel_latency_analyzer = LlmAgent(
         has_report_content,
         get_analysis_config,
         get_query_details,
-        get_request_details
+        get_request_details,
+        get_subagent_tool_usage
     ],
     sub_agents=[report_orchestrator],
 )

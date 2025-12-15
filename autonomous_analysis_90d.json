@@ -2,6 +2,7 @@
     "state": {},
     "config": {
         "time_period_days": "100d",
+        "analysis_scope": "autonomous",
         "kpis": {
             "mean_latency_target": 3.0,
             "p95_latency_target": 5.0,

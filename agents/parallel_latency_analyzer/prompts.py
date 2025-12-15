@@ -393,6 +393,7 @@ Stitch them together into a cohesive "Autonomous Latency Analysis Report" follow
 **CRITICAL FIRST STEP:**
 Call `get_analysis_metadata()` to get actual environment values (project_id, dataset, tables, version, timestamp).
 Call `get_tool_usage_report()` to retrieve system performance metrics.
+Call `get_subagent_tool_usage()` to retrieve granular subagent activity.
 **DO NOT** make up or hallucinate these values.
 
 **MANDATORY METADATA HEADER:**
@@ -403,7 +404,7 @@ ALL reports MUST start with this exact metadata header structure:
 **Analysis Metadata:**
 - **Time Range**: [e.g., "Last 90 days" or specific date range]
 - **Model**: [Model name if filtered, or "All models"]
-- **Agent**: [If get_analysis_metadata().agents_included is not empty, list them. Else if get_analysis_metadata().agents_excluded is not empty, say 'All except [excluded]'. Else 'All agents']
+- **Agent**: [CRITICAL: Check `get_analysis_metadata().agents_included`. IF it is not empty, you MUST list them exactly (e.g., "latency_analyzer, final_report_assembler"). Else if `agents_excluded` is not empty, say 'All except [excluded]'. Else 'All agents']
 - **Project ID**: [from get_analysis_metadata().project_id]
 - **Dataset**: [from get_analysis_metadata().dataset]
 - **Tables**: [from get_analysis_metadata().tables - list all tables]
@@ -451,6 +452,12 @@ ALL reports MUST start with this exact metadata header structure:
     -   Table of tool usage from `get_tool_usage_report()`
     -   Columns: Tool Name, Description, Calls, Avg Time (s), Total Time (s)
     -   Sort by Total Time Descending
+11. **Subagent Tool Activity**:
+    -   Call `get_subagent_tool_usage()` (pass the configured time range).
+    -   Create a table: **"Tool Usage By Subagent"**
+    -   Columns: Agent Name, Tool Name, Count
+    -   Sort ALPHABETICALLY by Agent Name, then by Count (Descending)
+    -   **MANDATORY**: Group by Agent.
 
 **CRITICAL SECTION REQUIREMENTS:**
 
@@ -481,8 +488,8 @@ ALL reports MUST start with this exact metadata header structure:
 -   **Do NOT hallucinate new data**. Only use what is in the sections or from calling the metadata tool.
 -   **DO call `get_analysis_metadata()` first** to get real values for the header.
 -   **DO call `get_tool_usage_report()`** to populate the stats section.
+-   **DO call `get_subagent_tool_usage()`** to populate the subagent activity section.
 """
-
 
 
 # ==============================================================================
