@@ -6,16 +6,16 @@ import sys
 import os
 
 # Add updated path to sys.path to find utils
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../agents/parallel_latency_analyzer')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import utils
+from agents.parallel_latency_analyzer import utils
 
 class TestKPICompliance(unittest.TestCase):
 
-    @patch('utils.get_analysis_config')
-    @patch('utils.get_overall_statistics')
-    @patch('utils.get_agent_comparison')
-    @patch('utils.parse_time_range')
+    @patch('agents.parallel_latency_analyzer.utils.get_analysis_config')
+    @patch('agents.parallel_latency_analyzer.utils.get_overall_statistics')
+    @patch('agents.parallel_latency_analyzer.utils.get_agent_comparison')
+    @patch('agents.parallel_latency_analyzer.utils.parse_time_range')
     def test_per_agent_compliance(self, mock_parse_time, mock_agent_comparison, mock_overall_stats, mock_config):
         # Mock Config
         mock_config.return_value = json.dumps({

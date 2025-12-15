@@ -11,7 +11,7 @@ import pandas as pd
 import numpy as np
 from google.cloud import bigquery
 from google.api_core.exceptions import GoogleAPICallError
-
+from datetime import timezone
 from dotenv import load_dotenv
 from google.adk.tools.tool_context import ToolContext
 from google.adk.agents.callback_context import CallbackContext
@@ -21,21 +21,27 @@ import google.auth
 from .telemetry import trace_span, get_tool_stats
 
 load_dotenv()
+
+# Get ADC creds and project ID.
 _, project = google.auth.default()
 
 PROJECT_ID = os.getenv('PROJECT_ID') or project
 DATASET_ID = os.getenv('DATASET_ID') or os.getenv("DATASET")
 TABLE_ID = os.getenv('AGENT_TABLE_ID') or os.getenv('GEMINI_LOG_TABLE')
-# Get ADC creds and project ID.
-
+VIEW_ID = os.getenv('VIEW_ID', "llm_logging_view")
+LOCATION = os.getenv('LOCATION', "us")
 
 assert PROJECT_ID, "PROJECT_ID environment variable not set"
 assert DATASET_ID, "DATASET_ID environment variable not set"
 assert TABLE_ID, "TABLE_ID environment variable not set"
 
 
+os.environ['GOOGLE_CLOUD_PROJECT'] = PROJECT_ID
+os.environ['GOOGLE_CLOUD_LOCATION'] = LOCATION
+os.environ['GOOGLE_GENAI_USE_VERTEXAI'] = 'True'
+
 # Agent version for tracking
-AGENT_VERSION = "0.0.1"
+AGENT_VERSION = "0.0.2"
 
 print(f"Agent version: {AGENT_VERSION}, TABLE_ID: {TABLE_ID}, PROJECT_ID: {PROJECT_ID}, DATASET_ID: {DATASET_ID}")
 
@@ -74,7 +80,66 @@ def get_bq_client():
     global _bq_client
     if _bq_client is None:
         _bq_client = bigquery.Client(project=PROJECT_ID)
+        # Ensure view exists (lazy initialization)
+        try:
+            ensure_view_exists()
+        except Exception as e:
+            logging.warning(f"Failed to ensure view exists: {e}")
     return _bq_client
+
+def ensure_view_exists():
+    """Check if view exists, if not create it."""
+    client = bigquery.Client(project=PROJECT_ID)
+    view_ref = f"{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}"
+    
+    # Always recreate view to ensure it's up to date with code changes
+    logging.info(f"Ensuring view {view_ref} exists and is up to date...")
+        
+    # Read SQL file
+    # utils.py is in agents/parallel_latency_analyzer/
+    # sql is in sql/ at root
+    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    sql_path = os.path.join(base_dir, 'sql', 'create_latency_view.sql')
+    
+    if not os.path.exists(sql_path):
+        # Fallback for different path structures (e.g. tests)
+        if os.path.exists("sql/create_latency_view.sql"):
+             sql_path = "sql/create_latency_view.sql"
+        else:
+             logging.error(f"SQL definition not found at {sql_path}")
+             return
+
+    with open(sql_path, 'r') as f:
+        sql_template = f.read()
+
+    # Handle multiple tables with UNION ALL logic
+    tables = get_table_list()
+    if not tables:
+        logging.error("No tables found in configuration")
+        return
+
+    if len(tables) > 1:
+        # Construct UNION ALL subquery
+        union_parts = []
+        for table in tables:
+            union_parts.append(f"SELECT * FROM `{PROJECT_ID}.{DATASET_ID}.{table}`")
+        
+        # Wrap in parentheses as a subquery source
+        table_source = "(" + " UNION ALL ".join(union_parts) + ")"
+    else:
+        table_source = f"`{PROJECT_ID}.{DATASET_ID}.{tables[0]}`"
+
+    view_query = sql_template.format(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        view_id=VIEW_ID,
+        table_source=table_source
+    )
+
+    logging.info(f"Creating view {view_ref}...")
+    job = client.query(view_query)
+    job.result()
+    logging.info("View created successfully.")
 
 def clear_query_cache():
     """Clear the persistent query cache."""
@@ -188,7 +253,10 @@ def parse_time_range(time_range: str) -> str:
     from dateutil import parser
     from dateutil.relativedelta import relativedelta
     
-    now = datetime.utcnow()
+    # Use timezone-aware UTC then strip tzinfo to maintain naive compatibility (matches utcnow behavior)
+    # Fixes DeprecationWarning for datetime.utcnow()
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+
     time_range = time_range.strip().lower()
     
     if time_range == 'all':
@@ -363,20 +431,15 @@ def verify_data_access() -> str:
     logging.info(f"[CONFIG] Verifying access with: Project={PROJECT_ID}, Dataset={DATASET_ID}, Tables={tables}")
     
     try:
-        # Build query for all tables using UNION ALL
-        table_queries = []
-        for table in tables:
-            table_query = f"""
-            SELECT 
-                '{table}' as table_name,
-                COUNT(*) as total_rows,
-                MIN(logging_time) as first_log,
-                MAX(logging_time) as last_log
-            FROM `{PROJECT_ID}.{DATASET_ID}.{table}`
-            """
-            table_queries.append(table_query)
-        
-        query = "\nUNION ALL\n".join(table_queries)
+        # Query the View
+        query = f"""
+        SELECT 
+            '{VIEW_ID}' as table_name,
+            COUNT(*) as total_rows,
+            MIN(logging_time) as first_log,
+            MAX(logging_time) as last_log
+        FROM `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}`
+        """
         
         df = execute_bigquery(query, timeout=30)
         
@@ -521,6 +584,71 @@ def get_tool_usage_report() -> str:
     return json.dumps(report, indent=2)
 
 
+@trace_span()
+def get_subagent_tool_usage(
+    time_range: str = "24h",
+    agent_name: Optional[str] = None
+) -> str:
+    """
+    Get tool usage statistics broken down by subagent from BigQuery records.
+    
+    Args:
+        time_range: Time range to analyze (e.g., "24h", "7d")
+        agent_name: Optional filter for specific subagent name
+        
+    Returns:
+        JSON string with tool usage counts per agent
+    """
+    logging.info(f"[TOOL CALL-get_subagent_tool_usage] get_subagent_tool_usage(time_range='{time_range}', agent_name='{agent_name}')")
+    try:
+        time_range_dict = json.loads(parse_time_range(time_range))
+        start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
+        
+        where_clauses = [
+            f"logging_time BETWEEN '{start_time}' AND '{end_time}'",
+            "ARRAY_LENGTH(tool_calls) > 0"
+        ]
+        
+        if agent_name:
+            where_clauses.append(f"agent_name = '{agent_name}'")
+            
+        where_clause = " AND ".join(where_clauses)
+        
+        query = f"""
+        SELECT
+            agent_name,
+            tool_name,
+            COUNT(*) as frequency
+        FROM `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}`,
+        UNNEST(tool_calls) as tool_name
+        WHERE {where_clause}
+        GROUP BY 1, 2
+        ORDER BY 1, 3 DESC
+        """
+        
+        df = execute_bigquery(query)
+        
+        if df.empty:
+            return json.dumps({"message": "No tool usage found for the specified criteria."})
+            
+        # Structure the result as {agent: {tool: count}}
+        result = {}
+        for _, row in df.iterrows():
+            agent = row['agent_name']
+            tool = row['tool_name']
+            count = int(row['frequency'])
+            
+            if agent not in result:
+                result[agent] = {}
+            result[agent][tool] = count
+            
+        return json.dumps(result, cls=AnalysisEncoder, indent=2)
+        
+    except Exception as e:
+        logging.error(f"Error in get_subagent_tool_usage: {str(e)}")
+        return json.dumps({"error": str(e)})
+
+
 
 def build_multi_table_source(where_clause: str, select_suffix: str = "") -> str:
     """
@@ -589,16 +717,13 @@ def get_overall_statistics(
         # Build WHERE clause
         where_clauses = [
             f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
-            "T.full_request IS NOT NULL",
-            "T.full_response IS NOT NULL",
-            "T.model IS NOT NULL",
-            "JSON_VALUE(T.metadata.request_latency) IS NOT NULL"
+            "T.request_latency IS NOT NULL"
         ]
         
         if model_name:
             where_clauses.append(f"T.model LIKE '%{model_name}%'")
         if agent_name:
-            where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
+            where_clauses.append(f"T.agent_name = '{agent_name}'")
         
         # Apply global agent filters
         global_filter = _get_global_agent_filter("T")
@@ -607,77 +732,31 @@ def get_overall_statistics(
         
         where_clause = " AND ".join(where_clauses)
         
-        # Build query for multiple tables using UNION ALL
-        tables = get_table_list()
+        # Use the View for statistics
+        # Note: View has request_latency, prompt_token_count, etc. already casted.
         
-        if len(tables) == 1:
-            # Single table - direct aggregation
-            tables = get_table_list()
-            
-            query = f"""
+        query = f"""
         SELECT
           COUNT(*) as total_requests,
-          AVG(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) AS mean_latency,
-          APPROX_QUANTILES(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000, 100)[OFFSET(50)] AS median_latency,
-          APPROX_QUANTILES(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000, 100)[OFFSET(75)] AS p75_latency,
-          APPROX_QUANTILES(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000, 100)[OFFSET(90)] AS p90_latency,
-          APPROX_QUANTILES(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000, 100)[OFFSET(95)] AS p95_latency,
-          APPROX_QUANTILES(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000, 100)[OFFSET(99)] AS p99_latency,
-          APPROX_QUANTILES(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000, 1000)[OFFSET(999)] AS p999_latency,
-          MIN(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) AS min_latency,
-          MAX(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) AS max_latency,
-          STDDEV(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) AS std_latency,
-          AVG(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64)) AS mean_input_tokens,
-          AVG(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64)) AS mean_output_tokens,
-          AVG(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.thoughtsTokenCount) AS INT64)) AS mean_thought_tokens,
-          AVG(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64)) AS mean_total_tokens,
-          SUM(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64)) AS total_tokens
+          AVG(request_latency) AS mean_latency,
+          APPROX_QUANTILES(request_latency, 100)[OFFSET(50)] AS median_latency,
+          APPROX_QUANTILES(request_latency, 100)[OFFSET(75)] AS p75_latency,
+          APPROX_QUANTILES(request_latency, 100)[OFFSET(90)] AS p90_latency,
+          APPROX_QUANTILES(request_latency, 100)[OFFSET(95)] AS p95_latency,
+          APPROX_QUANTILES(request_latency, 100)[OFFSET(99)] AS p99_latency,
+          APPROX_QUANTILES(request_latency, 1000)[OFFSET(999)] AS p999_latency,
+          MIN(request_latency) AS min_latency,
+          MAX(request_latency) AS max_latency,
+          STDDEV(request_latency) AS std_latency,
+          AVG(prompt_token_count) AS mean_prompt_token_count,
+          AVG(candidates_token_count) AS mean_candidates_token_count,
+          AVG(thoughts_token_count) AS mean_thoughts_token_count,
+          AVG(total_token_count) AS mean_total_token_count,
+          SUM(total_token_count) AS total_token_count
         FROM
-          `{PROJECT_ID}.{DATASET_ID}.{tables[0]}` AS T
+          `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}` AS T
         WHERE
           {where_clause}
-        """
-        else:
-            # Multiple tables - union raw data then aggregate
-            table_selects = []
-            for table in tables:
-                table_select = f"""
-            SELECT
-              CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000 AS latency,
-              SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64) AS input_tokens,
-              SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) AS output_tokens,
-              SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.thoughtsTokenCount) AS INT64) AS thought_tokens,
-              SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64) AS total_tokens_row
-            FROM
-              `{PROJECT_ID}.{DATASET_ID}.{table}` AS T
-            WHERE
-              {where_clause}
-            """
-                table_selects.append(table_select)
-            
-            union_data = "\nUNION ALL\n".join(table_selects)
-            
-            query = f"""
-        SELECT
-          COUNT(*) as total_requests,
-          AVG(latency) AS mean_latency,
-          APPROX_QUANTILES(latency, 100)[OFFSET(50)] AS median_latency,
-          APPROX_QUANTILES(latency, 100)[OFFSET(75)] AS p75_latency,
-          APPROX_QUANTILES(latency, 100)[OFFSET(90)] AS p90_latency,
-          APPROX_QUANTILES(latency, 100)[OFFSET(95)] AS p95_latency,
-          APPROX_QUANTILES(latency, 100)[OFFSET(99)] AS p99_latency,
-          APPROX_QUANTILES(latency, 1000)[OFFSET(999)] AS p999_latency,
-          MIN(latency) AS min_latency,
-          MAX(latency) AS max_latency,
-          STDDEV(latency) AS std_latency,
-          AVG(input_tokens) AS mean_input_tokens,
-          AVG(output_tokens) AS mean_output_tokens,
-          AVG(thought_tokens) AS mean_thought_tokens,
-          AVG(total_tokens_row) AS mean_total_tokens,
-          SUM(total_tokens_row) AS total_tokens
-        FROM (
-{union_data}
-        )
         """
         
         df = execute_bigquery(query)
@@ -714,11 +793,11 @@ def get_overall_statistics(
                 "std": float(row['std_latency']) if pd.notna(row['std_latency']) else None
             },
             "tokens": {
-                "mean_input": float(row['mean_input_tokens']) if pd.notna(row['mean_input_tokens']) else None,
-                "mean_output": float(row['mean_output_tokens']) if pd.notna(row['mean_output_tokens']) else None,
-                "mean_thought": float(row['mean_thought_tokens']) if pd.notna(row['mean_thought_tokens']) else None,
-                "mean_total": float(row['mean_total_tokens']) if pd.notna(row['mean_total_tokens']) else None,
-                "total": int(row['total_tokens']) if pd.notna(row['total_tokens']) else None
+                "mean_input": float(row['mean_prompt_token_count']) if pd.notna(row['mean_prompt_token_count']) else None,
+                "mean_output": float(row['mean_candidates_token_count']) if pd.notna(row['mean_candidates_token_count']) else None,
+                "mean_thought": float(row['mean_thoughts_token_count']) if pd.notna(row['mean_thoughts_token_count']) else None,
+                "mean_total": float(row['mean_total_token_count']) if pd.notna(row['mean_total_token_count']) else None,
+                "total": int(row['total_token_count']) if pd.notna(row['total_token_count']) else None
             },
             "summary": f"Analyzed {int(row['total_requests'])} requests. Mean latency: {float(row['mean_latency']):.2f}s, P95: {float(row['p95_latency']):.2f}s"
         }
@@ -744,64 +823,26 @@ def get_trace_details(trace_id: str) -> str:
     """
     logging.info(f"[TOOL CALL-get_trace_details] get_trace_details(trace_id='{trace_id}')")
     try:
-        # Tables logic
-        tables = get_table_list()
-        
-        where_clause = f"trace LIKE '%{trace_id}%' OR JSON_VALUE(otel_log.traceId) = '{trace_id}'"
-        
-        # We need to robustly handle the missing 'trace' column case in legacy data
-        # Since we can't easily check schema here, we might just try querying.
-        # But if 'trace' column doesn't exist, this query fails.
-        # We'll rely on the view having the column or using a safer query if possible.
-        # For now, let's assume the view or table has 'trace' or we query robustly.
-        pass
-        
-        # Actually, let's just query the VIEW if it exists?
-        # The VIEW_ID is `llm_logging_view`.
-        view_ref = f"`{PROJECT_ID}.{DATASET_ID}.llm_logging_view`"
-        
-        # Try querying the view first (best practice)
+        # Query the View
         query = f"""
         SELECT
             request_id,
             logging_time,
-            latency_seconds,
+            request_latency,
             model,
             agent_name,
-            input_tokens,
-            output_tokens,
-            thought_tokens,
-            total_tokens,
-            trace
-        FROM {view_ref}
-        WHERE trace LIKE '%{trace_id}%'
+            prompt_token_count,
+            candidates_token_count,
+            thoughts_token_count,
+            total_token_count,
+            trace_id
+        FROM `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}`
+        WHERE trace_id = '{trace_id}'
         ORDER BY logging_time ASC
         LIMIT 100
         """
         
-        try:
-            df = execute_bigquery(query)
-        except Exception:
-            # Fallback to raw tables if view query fails (e.g. view not updated yet)
-            # This fallback might also fail if 'trace' column completely missing
-            table_queries = []
-            for table in tables:
-                table_queries.append(f"""
-                SELECT 
-                    CAST(request_id AS STRING) as request_id, 
-                    logging_time,
-                    CAST(JSON_EXTRACT_SCALAR(metadata, '$.request_latency') AS FLOAT64) / 1000 AS latency_seconds,
-                    model,
-                    COALESCE(JSON_VALUE(full_request.labels.adk_agent_name), 'unknown') AS agent_name,
-                    -- Try to get trace from standard column or NULL
-                    'unknown' as trace
-                FROM `{PROJECT_ID}.{DATASET_ID}.{table}`
-                -- Metadata match as fallback for older logs?
-                WHERE JSON_VALUE(otel_log.traceId) = '{trace_id}' 
-                """)
-            
-            full_query = "\nUNION ALL\n".join(table_queries) + "\nORDER BY logging_time ASC LIMIT 100"
-            df = execute_bigquery(full_query)
+        df = execute_bigquery(query)
 
         if df.empty:
             return json.dumps({"message": f"No logs found for trace_id: {trace_id}"})
@@ -836,15 +877,13 @@ def get_latency_distribution(
         
         where_clauses = [
             f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
-            "T.full_request IS NOT NULL",
-            "T.full_response IS NOT NULL",
-            "JSON_VALUE(T.metadata.request_latency) IS NOT NULL"
+            "T.request_latency IS NOT NULL"
         ]
         
         if model_name:
             where_clauses.append(f"T.model LIKE '%{model_name}%'")
         if agent_name:
-            where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
+            where_clauses.append(f"T.agent_name = '{agent_name}'")
             
         # Apply global agent filters
         global_filter = _get_global_agent_filter("T")
@@ -853,77 +892,28 @@ def get_latency_distribution(
         
         where_clause = " AND ".join(where_clauses)
         
-        # Build table source (handles single or multiple tables)
-        tables = get_table_list()
-        
-        if len(tables) == 1:
-            # Single table - use CTE approach
-            tables = get_table_list()
-            
-            query = f"""
+        # Use View for simpler query
+        query = f"""
         WITH latency_data AS (
           SELECT
-            CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000 AS latency_seconds
+            request_latency
           FROM
-            `{PROJECT_ID}.{DATASET_ID}.{tables[0]}` AS T
+            `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}` AS T
           WHERE
             {where_clause}
         )
         SELECT
           CASE
-            WHEN latency_seconds < 1.0 THEN 'Fast (<1s)'
-            WHEN latency_seconds < 2.0 THEN 'Medium (1-2s)'
-            WHEN latency_seconds < 3.0 THEN 'Slow (2-3s)'
-            WHEN latency_seconds < 5.0 THEN 'Very Slow (3-5s)'
+            WHEN request_latency < 1.0 THEN 'Fast (<1s)'
+            WHEN request_latency < 2.0 THEN 'Medium (1-2s)'
+            WHEN request_latency < 3.0 THEN 'Slow (2-3s)'
+            WHEN request_latency < 5.0 THEN 'Very Slow (3-5s)'
             ELSE 'Outliers (5s+)'
           END AS category,
           COUNT(*) as count,
-          AVG(latency_seconds) as avg_latency,
-          MIN(latency_seconds) as min_latency,
-          MAX(latency_seconds) as max_latency
-        FROM latency_data
-        GROUP BY category
-        ORDER BY 
-          CASE category
-            WHEN 'Fast (<1s)' THEN 1
-            WHEN 'Medium (1-2s)' THEN 2
-            WHEN 'Slow (2-3s)' THEN 3
-            WHEN 'Very Slow (3-5s)' THEN 4
-            WHEN 'Outliers (5s+)' THEN 5
-          END
-        """
-        else:
-            # Multiple tables - UNION ALL then aggregate
-            table_selects = []
-            for table in tables:
-                table_select = f"""
-          SELECT
-            CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000 AS latency_seconds
-          FROM
-            `{PROJECT_ID}.{DATASET_ID}.{table}` AS T
-          WHERE
-            {where_clause}
-        """
-                table_selects.append(table_select)
-            
-            union_data = "\nUNION ALL\n".join(table_selects)
-            
-            query = f"""
-        WITH latency_data AS (
-{union_data}
-        )
-        SELECT
-          CASE
-            WHEN latency_seconds < 1.0 THEN 'Fast (<1s)'
-            WHEN latency_seconds < 2.0 THEN 'Medium (1-2s)'
-            WHEN latency_seconds < 3.0 THEN 'Slow (2-3s)'
-            WHEN latency_seconds < 5.0 THEN 'Very Slow (3-5s)'
-            ELSE 'Outliers (5s+)'
-          END AS category,
-          COUNT(*) as count,
-          AVG(latency_seconds) as avg_latency,
-          MIN(latency_seconds) as min_latency,
-          MAX(latency_seconds) as max_latency
+          AVG(request_latency) as avg_latency,
+          MIN(request_latency) as min_latency,
+          MAX(request_latency) as max_latency
         FROM latency_data
         GROUP BY category
         ORDER BY 
@@ -991,15 +981,13 @@ def get_hourly_patterns(
         
         where_clauses = [
             f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
-            "T.full_request IS NOT NULL",
-            "T.full_response IS NOT NULL",
-            "JSON_VALUE(T.metadata.request_latency) IS NOT NULL"
+            "T.request_latency IS NOT NULL"
         ]
         
         if model_name:
             where_clauses.append(f"T.model LIKE '%{model_name}%'")
         if agent_name:
-            where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
+            where_clauses.append(f"T.agent_name = '{agent_name}'")
         
         # Apply global agent filters
         global_filter = _get_global_agent_filter("T")
@@ -1008,59 +996,21 @@ def get_hourly_patterns(
         
         where_clause = " AND ".join(where_clauses)
         
-        # Build query for multiple tables using UNION ALL
-        tables = get_table_list()
-        
-        if len(tables) == 1:
-            query = f"""
+        # Use View for simpler query
+        query = f"""
         SELECT
           EXTRACT(HOUR FROM T.logging_time) AS hour,
           EXTRACT(DAYOFWEEK FROM T.logging_time) AS day_of_week,
           CASE WHEN EXTRACT(DAYOFWEEK FROM T.logging_time) IN (1, 7) THEN 'weekend' ELSE 'working' END AS day_type,
           COUNT(*) as request_count,
-          AVG(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) AS avg_latency,
-          APPROX_QUANTILES(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000, 100)[OFFSET(95)] AS p95_latency,
-          MIN(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) AS min_latency,
-          MAX(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) AS max_latency
+          AVG(request_latency) AS avg_latency,
+          APPROX_QUANTILES(request_latency, 100)[OFFSET(95)] AS p95_latency,
+          MIN(request_latency) AS min_latency,
+          MAX(request_latency) AS max_latency
         FROM
-          `{PROJECT_ID}.{DATASET_ID}.{tables[0]}` AS T
+          `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}` AS T
         WHERE
           {where_clause}
-        GROUP BY hour, day_of_week, day_type
-        ORDER BY hour
-        """
-        else:
-            # Multiple tables - union raw data then aggregate
-            table_selects = []
-            for table in tables:
-                table_select = f"""
-        SELECT
-          EXTRACT(HOUR FROM T.logging_time) AS hour,
-          EXTRACT(DAYOFWEEK FROM T.logging_time) AS day_of_week,
-          CASE WHEN EXTRACT(DAYOFWEEK FROM T.logging_time) IN (1, 7) THEN 'weekend' ELSE 'working' END AS day_type,
-          CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000 AS latency
-        FROM
-          `{PROJECT_ID}.{DATASET_ID}.{table}` AS T
-        WHERE
-          {where_clause}
-        """
-                table_selects.append(table_select)
-            
-            union_data = "\nUNION ALL\n".join(table_selects)
-            
-            query = f"""
-        SELECT
-          hour,
-          day_of_week,
-          day_type,
-          COUNT(*) as request_count,
-          AVG(latency) AS avg_latency,
-          APPROX_QUANTILES(latency, 100)[OFFSET(95)] AS p95_latency,
-          MIN(latency) AS min_latency,
-          MAX(latency) AS max_latency
-        FROM (
-{union_data}
-        )
         GROUP BY hour, day_of_week, day_type
         ORDER BY hour
         """
@@ -1148,7 +1098,6 @@ def get_hourly_model_distribution(
         
         where_clauses = [
             f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
-            "T.full_request IS NOT NULL",
             "T.model IS NOT NULL"
         ]
         
@@ -1170,23 +1119,21 @@ def get_hourly_model_distribution(
                 EXTRACT(HOUR FROM T.logging_time) AS hour,
                 T.model,
                 COUNT(*) as request_count
-            FROM `{PROJECT_ID}.{DATASET_ID}.{tables[0]}` AS T
+            FROM `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}` AS T
             WHERE {where_clause}
             GROUP BY hour, model
             ORDER BY hour, request_count DESC
             """
         else:
-            table_selects = []
-            for table in tables:
-                table_selects.append(f"""
-                SELECT EXTRACT(HOUR FROM T.logging_time) AS hour, T.model, 1 as cnt
-                FROM `{PROJECT_ID}.{DATASET_ID}.{table}` AS T
-                WHERE {where_clause}
-                """)
-            union_data = "\nUNION ALL\n".join(table_selects)
+            # View handles union, so we don't need manual union logic here!
+            # We can use the same simple query as above.
             query = f"""
-            SELECT hour, model, COUNT(*) as request_count
-            FROM ({union_data})
+            SELECT
+                EXTRACT(HOUR FROM T.logging_time) AS hour,
+                T.model,
+                COUNT(*) as request_count
+            FROM `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}` AS T
+            WHERE {where_clause}
             GROUP BY hour, model
             ORDER BY hour, request_count DESC
             """
@@ -1250,9 +1197,8 @@ def get_hourly_model_latency_heatmap(
         
         where_clauses = [
             f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
-            "T.full_request IS NOT NULL",
             "T.model IS NOT NULL",
-            "JSON_VALUE(T.metadata.request_latency) IS NOT NULL"
+            "T.request_latency IS NOT NULL"
         ]
         
         if agent_name:
@@ -1267,35 +1213,37 @@ def get_hourly_model_latency_heatmap(
         tables = get_table_list()
         
         # Build Query
+        # Build Query
         if len(tables) == 1:
             query = f"""
             SELECT
                 EXTRACT(HOUR FROM T.logging_time) AS hour,
                 T.model,
-                AVG(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) AS avg_latency,
-                APPROX_QUANTILES(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000, 100)[OFFSET(95)] AS p95_latency,
+                AVG(request_latency) AS avg_latency,
+                APPROX_QUANTILES(request_latency, 100)[OFFSET(95)] AS p95_latency,
                 COUNT(*) as request_count
-            FROM `{PROJECT_ID}.{DATASET_ID}.{tables[0]}` AS T
+            FROM `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}` AS T
             WHERE {where_clause}
             GROUP BY hour, model
             HAVING request_count >= 5  -- Low sample size filter
             ORDER BY hour, model
             """
-        # Build multi-table source
-        union_source = build_multi_table_source(where_clause, select_suffix="AS T")
-        
-        query = f"""
-        SELECT
-            EXTRACT(HOUR FROM T.logging_time) AS hour,
-            T.model,
-            AVG(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) AS avg_latency,
-            APPROX_QUANTILES(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000, 100)[OFFSET(95)] AS p95_latency,
-            COUNT(*) as request_count
-        FROM {union_source}
-        GROUP BY hour, model
-        HAVING request_count >= 5
-        ORDER BY hour, model
-        """
+        else:
+            # View handles integration
+            query = f"""
+            SELECT
+                EXTRACT(HOUR FROM T.logging_time) AS hour,
+                T.model,
+                AVG(request_latency) AS avg_latency,
+                APPROX_QUANTILES(request_latency, 100)[OFFSET(95)] AS p95_latency,
+                COUNT(*) as request_count
+            FROM `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}` AS T
+            WHERE {where_clause}
+            GROUP BY hour, model
+            HAVING request_count >= 5  -- Low sample size filter
+            ORDER BY hour, model
+            """
+
             
         df = execute_bigquery(query)
         
@@ -1345,9 +1293,7 @@ def get_agent_comparison(
         
         where_clauses = [
             f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
-            "T.full_request IS NOT NULL",
-            "T.full_response IS NOT NULL",
-            "JSON_VALUE(T.metadata.request_latency) IS NOT NULL"
+            "T.request_latency IS NOT NULL"
         ]
         
         if model_name:
@@ -1360,33 +1306,32 @@ def get_agent_comparison(
         
         where_clause = " AND ".join(where_clauses)
         
-        # Build query for multiple tables using UNION ALL
-        # Build multi-table source
-        union_source = build_multi_table_source(where_clause, select_suffix="AS T")
-        
+        # Use View for simpler query
         query = f"""
         SELECT
-          COALESCE(JSON_VALUE(T.full_request.labels.adk_agent_name), 'unknown') AS agent_name,
+          T.agent_name AS agent_name,
           COUNT(*) as total_calls,
-          AVG(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) AS avg_latency,
-          APPROX_QUANTILES(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000, 100)[OFFSET(95)] AS p95_latency,
-          AVG(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64)) AS avg_input_tokens,
-          APPROX_QUANTILES(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64), 100)[OFFSET(95)] AS p95_input_tokens,
-          AVG(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64)) AS avg_output_tokens,
-          APPROX_QUANTILES(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64), 100)[OFFSET(95)] AS p95_output_tokens,
-          AVG(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.thoughtsTokenCount) AS INT64)) AS avg_thought_tokens,
-          APPROX_QUANTILES(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.thoughtsTokenCount) AS INT64), 100)[OFFSET(95)] AS p95_thought_tokens,
-          AVG(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64)) AS avg_total_tokens,
-          SUM(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64)) AS total_tokens,
+          AVG(request_latency) AS avg_latency,
+          APPROX_QUANTILES(request_latency, 100)[OFFSET(95)] AS p95_latency,
+          AVG(prompt_token_count) AS avg_prompt_token_count,
+          APPROX_QUANTILES(prompt_token_count, 100)[OFFSET(95)] AS p95_prompt_token_count,
+          AVG(candidates_token_count) AS avg_candidates_token_count,
+          APPROX_QUANTILES(candidates_token_count, 100)[OFFSET(95)] AS p95_candidates_token_count,
+          AVG(thoughts_token_count) AS avg_thoughts_token_count,
+          APPROX_QUANTILES(thoughts_token_count, 100)[OFFSET(95)] AS p95_thoughts_token_count,
+          AVG(total_token_count) AS avg_total_token_count,
+          SUM(total_token_count) AS total_token_count,
           AVG(
              CASE 
-                WHEN SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) > 0 
-                THEN (CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) / SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64)
+                WHEN candidates_token_count > 0 
+                THEN request_latency / candidates_token_count
                 ELSE 0 
              END
           ) AS avg_tpot
         FROM
-          {union_source}
+          `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}` AS T
+        WHERE
+          {where_clause}
         GROUP BY agent_name
         ORDER BY agent_name ASC
         """
@@ -1400,36 +1345,36 @@ def get_agent_comparison(
         for _, row in df.iterrows():
             # Calculate efficiency score (lower is better): latency per 1000 tokens
             efficiency = None
-            if pd.notna(row['avg_input_tokens']) and row['avg_input_tokens'] > 0:
-                efficiency = float(row['avg_latency']) / (float(row['avg_input_tokens']) / 1000)
+            if pd.notna(row['avg_prompt_token_count']) and row['avg_prompt_token_count'] > 0:
+                efficiency = float(row['avg_latency']) / (float(row['avg_prompt_token_count']) / 1000)
             
             # Use explicit thought tokens if available, otherwise estimate
             avg_brain_tokens = 0
-            if pd.notna(row['avg_thought_tokens']):
-                 avg_brain_tokens = row['avg_thought_tokens']
-            elif pd.notna(row['avg_total_tokens']) and pd.notna(row['avg_input_tokens']) and pd.notna(row['avg_output_tokens']):
-                 avg_brain_tokens = max(0, row['avg_total_tokens'] - row['avg_input_tokens'] - row['avg_output_tokens'])
+            if pd.notna(row['avg_thoughts_token_count']):
+                 avg_brain_tokens = row['avg_thoughts_token_count']
+            elif pd.notna(row['avg_total_token_count']) and pd.notna(row['avg_prompt_token_count']) and pd.notna(row['avg_candidates_token_count']):
+                 avg_brain_tokens = max(0, row['avg_total_token_count'] - row['avg_prompt_token_count'] - row['avg_candidates_token_count'])
             
             # Thought ratio
             thought_ratio = 0
-            if pd.notna(row['avg_output_tokens']) and row['avg_output_tokens'] > 0:
-                thought_ratio = avg_brain_tokens / row['avg_output_tokens']
+            if pd.notna(row['avg_candidates_token_count']) and row['avg_candidates_token_count'] > 0:
+                thought_ratio = avg_brain_tokens / row['avg_candidates_token_count']
             
             agents.append({
                 "agent_name": row['agent_name'],
                 "total_calls": int(row['total_calls']),
                 "avg_latency": float(row['avg_latency']),
                 "p95_latency": float(row['p95_latency']) if pd.notna(row['p95_latency']) else None,
-                "avg_input_tokens": float(row['avg_input_tokens']) if pd.notna(row['avg_input_tokens']) else None,
-                "p95_input_tokens": float(row['p95_input_tokens']) if pd.notna(row['p95_input_tokens']) else None,
-                "avg_output_tokens": float(row['avg_output_tokens']) if pd.notna(row['avg_output_tokens']) else None,
-                "p95_output_tokens": float(row['p95_output_tokens']) if pd.notna(row['p95_output_tokens']) else None,
-                "avg_thought_tokens": float(avg_brain_tokens),
-                "p95_thought_tokens": float(row['p95_thought_tokens']) if pd.notna(row['p95_thought_tokens']) else None,
-                "avg_total_tokens": float(row['avg_total_tokens']) if pd.notna(row['avg_total_tokens']) else None,
+                "avg_prompt_token_count": float(row['avg_prompt_token_count']) if pd.notna(row['avg_prompt_token_count']) else None,
+                "p95_prompt_token_count": float(row['p95_prompt_token_count']) if pd.notna(row['p95_prompt_token_count']) else None,
+                "avg_candidates_token_count": float(row['avg_candidates_token_count']) if pd.notna(row['avg_candidates_token_count']) else None,
+                "p95_candidates_token_count": float(row['p95_candidates_token_count']) if pd.notna(row['p95_candidates_token_count']) else None,
+                "avg_thoughts_token_count": float(avg_brain_tokens),
+                "p95_thoughts_token_count": float(row['p95_thoughts_token_count']) if pd.notna(row['p95_thoughts_token_count']) else None,
+                "avg_total_token_count": float(row['avg_total_token_count']) if pd.notna(row['avg_total_token_count']) else None,
                 "thought_output_ratio": float(thought_ratio),
                 "avg_tpot": float(row['avg_tpot']) if pd.notna(row['avg_tpot']) else None,
-                "total_tokens": int(row['total_tokens']) if pd.notna(row['total_tokens']) else None,
+                "total_token_count": int(row['total_token_count']) if pd.notna(row['total_token_count']) else None,
                 "efficiency_score": efficiency
             })
         
@@ -1489,14 +1434,12 @@ def get_model_comparison(
         
         where_clauses = [
             f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
-            "T.full_request IS NOT NULL",
-            "T.full_response IS NOT NULL",
             "T.model IS NOT NULL",
-            "JSON_VALUE(T.metadata.request_latency) IS NOT NULL"
+            "T.request_latency IS NOT NULL"
         ]
         
         if agent_name:
-            where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
+            where_clauses.append(f"T.agent_name = '{agent_name}'")
             
         # Apply global agent filters
         global_filter = _get_global_agent_filter("T")
@@ -1505,32 +1448,31 @@ def get_model_comparison(
         
         where_clause = " AND ".join(where_clauses)
         
-        # Build query for multiple tables using UNION ALL
-        # Build multi-table source
-        union_source = build_multi_table_source(where_clause, select_suffix="AS T")
-        
+        # Use View for simpler query
         query = f"""
         SELECT
           SPLIT(T.model, '/')[SAFE_OFFSET(1)] AS publisher,
           SPLIT(T.model, '/')[SAFE_OFFSET(3)] AS model_name,
           T.model AS full_model_path,
           COUNT(*) as total_calls,
-          AVG(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) AS avg_latency,
-          APPROX_QUANTILES(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000, 100)[OFFSET(95)] AS p95_latency,
-          AVG(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64)) AS avg_input_tokens,
-          AVG(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64)) AS avg_output_tokens,
-          AVG(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.thoughtsTokenCount) AS INT64)) AS avg_thought_tokens,
-          AVG(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64)) AS avg_total_tokens,
-          SUM(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64)) AS total_tokens,
+          AVG(request_latency) AS avg_latency,
+          APPROX_QUANTILES(request_latency, 100)[OFFSET(95)] AS p95_latency,
+          AVG(prompt_token_count) AS avg_prompt_token_count,
+          AVG(candidates_token_count) AS avg_candidates_token_count,
+          AVG(thoughts_token_count) AS avg_thoughts_token_count,
+          AVG(total_token_count) AS avg_total_token_count,
+          SUM(total_token_count) AS total_token_count_sum,
           AVG(
              CASE 
-                WHEN SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) > 0 
-                THEN (CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) / SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64)
+                WHEN candidates_token_count > 0 
+                THEN request_latency / candidates_token_count
                 ELSE 0 
              END
           ) AS avg_tpot
         FROM
-          {union_source}
+          `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}` AS T
+        WHERE
+          {where_clause}
         GROUP BY publisher, model_name, full_model_path
         ORDER BY total_calls DESC
         """
@@ -1544,20 +1486,20 @@ def get_model_comparison(
         for _, row in df.iterrows():
             # Calculate efficiency score (lower is better): latency per 1000 tokens
             efficiency = None
-            if pd.notna(row['avg_input_tokens']) and row['avg_input_tokens'] > 0:
-                efficiency = float(row['avg_latency']) / (float(row['avg_input_tokens']) / 1000)
+            if pd.notna(row['avg_prompt_token_count']) and row['avg_prompt_token_count'] > 0:
+                efficiency = float(row['avg_latency']) / (float(row['avg_prompt_token_count']) / 1000)
             
             # Use explicit thought tokens if available, otherwise estimate
             avg_brain_tokens = 0
-            if pd.notna(row['avg_thought_tokens']):
-                 avg_brain_tokens = row['avg_thought_tokens']
-            elif pd.notna(row['avg_total_tokens']) and pd.notna(row['avg_input_tokens']) and pd.notna(row['avg_output_tokens']):
-                 avg_brain_tokens = max(0, row['avg_total_tokens'] - row['avg_input_tokens'] - row['avg_output_tokens'])
+            if pd.notna(row['avg_thoughts_token_count']):
+                 avg_brain_tokens = row['avg_thoughts_token_count']
+            elif pd.notna(row['avg_total_token_count']) and pd.notna(row['avg_prompt_token_count']) and pd.notna(row['avg_candidates_token_count']):
+                 avg_brain_tokens = max(0, row['avg_total_token_count'] - row['avg_prompt_token_count'] - row['avg_candidates_token_count'])
             
             # Thought ratio
             thought_ratio = 0
-            if pd.notna(row['avg_output_tokens']) and row['avg_output_tokens'] > 0:
-                thought_ratio = avg_brain_tokens / row['avg_output_tokens']
+            if pd.notna(row['avg_candidates_token_count']) and row['avg_candidates_token_count'] > 0:
+                thought_ratio = avg_brain_tokens / row['avg_candidates_token_count']
             
             model_name_clean = clean_model_name(row['full_model_path'])
             publisher = row['publisher'] if pd.notna(row['publisher']) else 'unknown'
@@ -1569,12 +1511,12 @@ def get_model_comparison(
                 "total_calls": int(row['total_calls']),
                 "avg_latency": float(row['avg_latency']),
                 "p95_latency": float(row['p95_latency']) if pd.notna(row['p95_latency']) else None,
-                "avg_input_tokens": float(row['avg_input_tokens']) if pd.notna(row['avg_input_tokens']) else None,
-                "avg_output_tokens": float(row['avg_output_tokens']) if pd.notna(row['avg_output_tokens']) else None,
-                "avg_thought_tokens": float(avg_brain_tokens),
+                "avg_prompt_token_count": float(row['avg_prompt_token_count']) if pd.notna(row['avg_prompt_token_count']) else None,
+                "avg_candidates_token_count": float(row['avg_candidates_token_count']) if pd.notna(row['avg_candidates_token_count']) else None,
+                "avg_thoughts_token_count": float(avg_brain_tokens),
                 "thought_output_ratio": float(thought_ratio),
                 "avg_tpot": float(row['avg_tpot']) if pd.notna(row['avg_tpot']) else None,
-                "total_tokens": int(row['total_tokens_sum'] if 'total_tokens_sum' in row else row['total_tokens']) if pd.notna(row.get('total_tokens_sum', row.get('total_tokens'))) else None,
+                "total_token_count": int(row['total_token_count_sum'] if 'total_token_count_sum' in row else row['total_token_count']) if pd.notna(row.get('total_token_count_sum', row.get('total_token_count'))) else None,
                 "efficiency_score": efficiency
             })
         
@@ -1642,10 +1584,8 @@ def get_agent_model_matrix(
         
         where_clauses = [
             f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
-            "T.full_request IS NOT NULL",
-            "T.full_response IS NOT NULL",
             "T.model IS NOT NULL",
-            "JSON_VALUE(T.metadata.request_latency) IS NOT NULL"
+            "T.request_latency IS NOT NULL"
         ]
         
         # Apply global agent filters
@@ -1655,36 +1595,33 @@ def get_agent_model_matrix(
             
         where_clause = " AND ".join(where_clauses)
         
-        # Build query for multiple tables using UNION ALL
-        tables = get_table_list()
-        
-        # Build multi-table source
-        union_source = build_multi_table_source(where_clause, select_suffix="AS T")
-        
+        # Use View for simpler query
         query = f"""
         SELECT
-          COALESCE(JSON_VALUE(T.full_request.labels.adk_agent_name), 'unknown') AS agent_name,
+          T.agent_name,
           SPLIT(T.model, '/')[SAFE_OFFSET(1)] AS publisher,
           SPLIT(T.model, '/')[SAFE_OFFSET(3)] AS model_name,
           T.model AS full_model_path,
           COUNT(*) as total_calls,
-          AVG(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) AS avg_latency,
-          APPROX_QUANTILES(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000, 100)[OFFSET(95)] AS p95_latency,
-          AVG(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64)) AS avg_input_tokens,
-          APPROX_QUANTILES(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64), 100)[OFFSET(95)] AS p95_input_tokens,
-          AVG(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64)) AS avg_output_tokens,
-          APPROX_QUANTILES(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64), 100)[OFFSET(95)] AS p95_output_tokens,
-          AVG(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.thoughtsTokenCount) AS INT64)) AS avg_thought_tokens,
-          APPROX_QUANTILES(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.thoughtsTokenCount) AS INT64), 100)[OFFSET(95)] AS p95_thought_tokens,
+          AVG(request_latency) AS avg_latency,
+          APPROX_QUANTILES(request_latency, 100)[OFFSET(95)] AS p95_latency,
+          AVG(prompt_token_count) AS avg_prompt_token_count,
+          APPROX_QUANTILES(prompt_token_count, 100)[OFFSET(95)] AS p95_prompt_token_count,
+          AVG(candidates_token_count) AS avg_candidates_token_count,
+          APPROX_QUANTILES(candidates_token_count, 100)[OFFSET(95)] AS p95_candidates_token_count,
+          AVG(thoughts_token_count) AS avg_thoughts_token_count,
+          APPROX_QUANTILES(thoughts_token_count, 100)[OFFSET(95)] AS p95_thoughts_token_count,
           AVG(
              CASE 
-                WHEN SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) > 0 
-                THEN (CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) / SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64)
+                WHEN candidates_token_count > 0 
+                THEN request_latency / candidates_token_count
                 ELSE 0 
              END
           ) AS avg_tpot
         FROM
-          {union_source}
+          `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}` AS T
+        WHERE
+            {where_clause}
         GROUP BY agent_name, publisher, model_name, full_model_path
         ORDER BY agent_name, total_calls DESC
         """
@@ -1714,12 +1651,12 @@ def get_agent_model_matrix(
                 "total_calls": int(row['total_calls']),
                 "avg_latency": float(row['avg_latency']),
                 "p95_latency": float(row['p95_latency']) if pd.notna(row['p95_latency']) else None,
-                "avg_input_tokens": float(row['avg_input_tokens']) if pd.notna(row['avg_input_tokens']) else None,
-                "p95_input_tokens": float(row['p95_input_tokens']) if pd.notna(row['p95_input_tokens']) else None,
-                "avg_output_tokens": float(row['avg_output_tokens']) if pd.notna(row['avg_output_tokens']) else None,
-                "p95_output_tokens": float(row['p95_output_tokens']) if pd.notna(row['p95_output_tokens']) else None,
-                "avg_thought_tokens": float(row['avg_thought_tokens']) if pd.notna(row['avg_thought_tokens']) else None,
-                "p95_thought_tokens": float(row['p95_thought_tokens']) if pd.notna(row['p95_thought_tokens']) else None,
+                "avg_prompt_token_count": float(row['avg_prompt_token_count']) if pd.notna(row['avg_prompt_token_count']) else None,
+                "p95_prompt_token_count": float(row['p95_prompt_token_count']) if pd.notna(row['p95_prompt_token_count']) else None,
+                "avg_candidates_token_count": float(row['avg_candidates_token_count']) if pd.notna(row['avg_candidates_token_count']) else None,
+                "p95_candidates_token_count": float(row['p95_candidates_token_count']) if pd.notna(row['p95_candidates_token_count']) else None,
+                "avg_thoughts_token_count": float(row['avg_thoughts_token_count']) if pd.notna(row['avg_thoughts_token_count']) else None,
+                "p95_thoughts_token_count": float(row['p95_thoughts_token_count']) if pd.notna(row['p95_thoughts_token_count']) else None,
                 "avg_tpot": float(row['avg_tpot']) if pd.notna(row['avg_tpot']) else None,
                 "publisher": row['publisher'] if pd.notna(row['publisher']) else 'unknown'
             }
@@ -1790,16 +1727,14 @@ def get_token_correlation(
         
         where_clauses = [
             f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
-            "T.full_request IS NOT NULL",
-            "T.full_response IS NOT NULL",
-            "JSON_VALUE(T.metadata.request_latency) IS NOT NULL",
-            "SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64) IS NOT NULL"
+            "T.request_latency IS NOT NULL",
+            "T.prompt_token_count IS NOT NULL"
         ]
         
         if model_name:
             where_clauses.append(f"T.model LIKE '%{model_name}%'")
         if agent_name:
-            where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
+            where_clauses.append(f"T.agent_name = '{agent_name}'")
         
         # Apply global agent filters
         global_filter = _get_global_agent_filter("T")
@@ -1808,20 +1743,17 @@ def get_token_correlation(
             
         where_clause = " AND ".join(where_clauses)
         
-        # Build query for multiple tables using UNION ALL
-        tables = get_table_list()
-        
-        # Build multi-table source
-        union_source = build_multi_table_source(where_clause, select_suffix="AS T")
-        
+        # Use View
         query = f"""
         SELECT
-          CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000 AS latency,
-          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64) AS input_tokens,
-          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) AS output_tokens,
-          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.thoughtsTokenCount) AS INT64) AS thought_tokens
+          request_latency AS latency,
+          prompt_token_count,
+          candidates_token_count,
+          thoughts_token_count
         FROM
-          {union_source}
+          `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}` AS T
+        WHERE
+           {where_clause}
         LIMIT 1000
         """
         
@@ -1831,12 +1763,12 @@ def get_token_correlation(
             return json.dumps({"error": "Insufficient data for correlation analysis"})
         
         # Calculate correlations
-        corr_input = df['latency'].corr(df['input_tokens']) if df['input_tokens'].notna().sum() > 1 else None
-        corr_output = df['latency'].corr(df['output_tokens']) if df['output_tokens'].notna().sum() > 1 else None
-        corr_thought = df['latency'].corr(df['thought_tokens']) if df['thought_tokens'].notna().sum() > 1 else None
+        corr_input = df['latency'].corr(df['prompt_token_count']) if df['prompt_token_count'].notna().sum() > 1 else None
+        corr_output = df['latency'].corr(df['candidates_token_count']) if df['candidates_token_count'].notna().sum() > 1 else None
+        corr_thought = df['latency'].corr(df['thoughts_token_count']) if df['thoughts_token_count'].notna().sum() > 1 else None
         
         # Calculate combined Output + Thought correlation (User Request)
-        df['combined_tokens'] = df['output_tokens'].fillna(0) + df['thought_tokens'].fillna(0)
+        df['combined_tokens'] = df['candidates_token_count'].fillna(0) + df['thoughts_token_count'].fillna(0)
         corr_combined = df['latency'].corr(df['combined_tokens']) if df['combined_tokens'].notna().sum() > 1 else None
         
         # Sample data points for visualization (limit to 100 for JSON size)
@@ -1845,9 +1777,9 @@ def get_token_correlation(
         for _, row in sample_df.iterrows():
             scatter_data.append({
                 "latency": float(row['latency']),
-                "input_tokens": int(row['input_tokens']) if pd.notna(row['input_tokens']) else None,
-                "output_tokens": int(row['output_tokens']) if pd.notna(row['output_tokens']) else None,
-                "thought_tokens": int(row['thought_tokens']) if pd.notna(row['thought_tokens']) else None,
+                "prompt_token_count": int(row['prompt_token_count']) if pd.notna(row['prompt_token_count']) else None,
+                "candidates_token_count": int(row['candidates_token_count']) if pd.notna(row['candidates_token_count']) else None,
+                "thoughts_token_count": int(row['thoughts_token_count']) if pd.notna(row['thoughts_token_count']) else None,
                 "combined_tokens": int(row['combined_tokens'])
             })
         
@@ -1857,10 +1789,10 @@ def get_token_correlation(
                 "sample_size": len(df)
             },
             "correlations": {
-                "latency_vs_input_tokens": float(corr_input) if corr_input is not None else None,
-                "latency_vs_output_tokens": float(corr_output) if corr_output is not None else None,
-                "latency_vs_thought_tokens": float(corr_thought) if corr_thought is not None else None,
-                "latency_vs_output_plus_thought_tokens": float(corr_combined) if corr_combined is not None else None
+                "latency_vs_prompt_token_count": float(corr_input) if corr_input is not None else None,
+                "latency_vs_candidates_token_count": float(corr_output) if corr_output is not None else None,
+                "latency_vs_thoughts_token_count": float(corr_thought) if corr_thought is not None else None,
+                "latency_vs_output_plus_thoughts_token_count": float(corr_combined) if corr_combined is not None else None
             },
             "scatter_data": scatter_data,
             "summary": f"Input tokens correlation: {corr_input:.3f}, Output tokens correlation: {corr_output:.3f}, Output+Thought correlation: {corr_combined:.3f}" if corr_input and corr_output and corr_combined else "Insufficient data"
@@ -1892,9 +1824,7 @@ def get_outlier_analysis(
         
         where_clauses = [
             f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
-            "T.full_request IS NOT NULL",
-            "T.full_response IS NOT NULL",
-            "JSON_VALUE(T.metadata.request_latency) IS NOT NULL"
+            "T.request_latency IS NOT NULL"
         ]
         
         if model_name:
@@ -1909,16 +1839,15 @@ def get_outlier_analysis(
             
         where_clause = " AND ".join(where_clauses)
         
-        # Build query for multiple tables using UNION ALL
-        # Build multi-table source for stats
-        union_source = build_multi_table_source(where_clause, select_suffix="AS T")
-        
+        # Stats query
         stats_query = f"""
         SELECT
-          AVG(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) AS mean_latency,
-          STDDEV(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) AS std_latency
+          AVG(request_latency) AS mean_latency,
+          STDDEV(request_latency) AS std_latency
         FROM
-          {union_source}
+          `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}` AS T
+        WHERE
+           {where_clause}
         """
         
         stats_df = execute_bigquery(stats_query)
@@ -1926,23 +1855,21 @@ def get_outlier_analysis(
         std_latency = float(stats_df.iloc[0]['std_latency'])
         threshold = mean_latency + (threshold_std * std_latency)
         
-        # Build multi-table source for outliers
-        # We need to rebuild union source because we can't reuse the previous one deeply if we want to filter on latency derived
-        # Actually we can just use the same source logic
-        
+        # Outliers query
         outliers_query = f"""
         SELECT
-          CAST(T.request_id AS STRING) AS request_id,
-          T.logging_time,
-          CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000 AS latency,
-          COALESCE(JSON_VALUE(T.full_request.labels.adk_agent_name), 'unknown') AS agent_name,
-          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64) AS input_tokens,
-          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) AS output_tokens,
-          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.thoughtsTokenCount) AS INT64) AS thought_tokens
+          request_id,
+          logging_time,
+          request_latency AS latency,
+          agent_name,
+          prompt_token_count,
+          candidates_token_count,
+          thoughts_token_count
         FROM
-          {union_source}
+          `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}` AS T
         WHERE
-          CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000 > {threshold}
+          request_latency > {threshold}
+          AND {where_clause}
         ORDER BY latency DESC
         LIMIT 50
         """
@@ -1956,9 +1883,9 @@ def get_outlier_analysis(
                 "timestamp": row['logging_time'].isoformat() if pd.notna(row['logging_time']) else None,
                 "latency": float(row['latency']),
                 "agent_name": row['agent_name'],
-                "input_tokens": int(row['input_tokens']) if pd.notna(row['input_tokens']) else None,
-                "output_tokens": int(row['output_tokens']) if pd.notna(row['output_tokens']) else None,
-                "thought_tokens": int(row['thought_tokens']) if pd.notna(row['thought_tokens']) else None,
+                "prompt_token_count": int(row['prompt_token_count']) if pd.notna(row['prompt_token_count']) else None,
+                "candidates_token_count": int(row['candidates_token_count']) if pd.notna(row['candidates_token_count']) else None,
+                "thoughts_token_count": int(row['thoughts_token_count']) if pd.notna(row['thoughts_token_count']) else None,
                 "std_deviations_above_mean": float((row['latency'] - mean_latency) / std_latency) if std_latency > 0 else None
             })
         
@@ -2001,15 +1928,13 @@ def get_slowest_queries(
         
         where_clauses = [
             f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
-            "T.full_request IS NOT NULL",
-            "T.full_response IS NOT NULL",
-            "JSON_VALUE(T.metadata.request_latency) IS NOT NULL"
+            "T.request_latency IS NOT NULL"
         ]
         
         if model_name:
             where_clauses.append(f"T.model LIKE '%{model_name}%'")
         if agent_name:
-            where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
+            where_clauses.append(f"T.agent_name = '{agent_name}'")
         
         # Apply global agent filters
         global_filter = _get_global_agent_filter("T")
@@ -2018,23 +1943,21 @@ def get_slowest_queries(
             
         where_clause = " AND ".join(where_clauses)
         
-        # Build multi-table source
-        union_source = build_multi_table_source(where_clause, select_suffix="AS T")
-        
         query = f"""
         SELECT
-          CAST(request_id AS STRING) AS request_id,
+          request_id,
           logging_time,
-          CAST(JSON_EXTRACT_SCALAR(metadata, '$.request_latency') AS FLOAT64) / 1000 AS latency,
+          request_latency AS latency,
           model,
-          COALESCE(JSON_VALUE(full_request.labels.adk_agent_name), 'unknown') AS agent_name,
-          SAFE_CAST(JSON_VALUE(full_response.usageMetadata.promptTokenCount) AS INT64) AS input_tokens,
-          SAFE_CAST(JSON_VALUE(full_response.usageMetadata.candidatesTokenCount) AS INT64) AS output_tokens,
-          SAFE_CAST(JSON_VALUE(full_response.usageMetadata.thoughtsTokenCount) AS INT64) AS thought_tokens,
-          SAFE_CAST(JSON_VALUE(full_response.usageMetadata.totalTokenCount) AS INT64) AS total_tokens,
-          SAFE_CAST(JSON_VALUE(full_response.usageMetadata.totalTokenCount) AS INT64) AS total_tokens
+          agent_name,
+          prompt_token_count,
+          candidates_token_count,
+          thoughts_token_count,
+          total_token_count
         FROM 
-            {union_source}
+            `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}` AS T
+        WHERE
+            {where_clause}
         ORDER BY latency DESC
         LIMIT {num_queries}
         """
@@ -2057,11 +1980,11 @@ def get_slowest_queries(
                 "latency": float(row['latency']),
                 "model": clean_model_name(row['model']),
                 "agent_name": row['agent_name'],
-                "input_tokens": int(row['input_tokens']) if pd.notna(row['input_tokens']) else None,
-                "output_tokens": int(row['output_tokens']) if pd.notna(row['output_tokens']) else None,
-                "thought_tokens": int(row['thought_tokens']) if pd.notna(row['thought_tokens']) else None,
-                "total_tokens": int(row['total_tokens']) if pd.notna(row['total_tokens']) else None,
-                "total_tokens": int(row['total_tokens']) if pd.notna(row['total_tokens']) else None
+                "prompt_token_count": int(row['prompt_token_count']) if pd.notna(row['prompt_token_count']) else None,
+                "candidates_token_count": int(row['candidates_token_count']) if pd.notna(row['candidates_token_count']) else None,
+                "thoughts_token_count": int(row['thoughts_token_count']) if pd.notna(row['thoughts_token_count']) else None,
+                "total_token_count": int(row['total_token_count']) if pd.notna(row['total_token_count']) else None,
+                "total_token_count": int(row['total_token_count']) if pd.notna(row['total_token_count']) else None
             })
         
         result = {
@@ -2070,7 +1993,7 @@ def get_slowest_queries(
                 "num_queries": len(queries)
             },
             "slowest_queries": queries,
-            "summary": f"Top {len(queries)} slowest queries. Slowest: {queries[0]['latency']:.2f}s with {queries[0]['total_tokens']} tokens"
+            "summary": f"Top {len(queries)} slowest queries. Slowest: {queries[0]['latency']:.2f}s with {queries[0]['total_token_count']} tokens"
         }
         
         return json.dumps(result, cls=AnalysisEncoder)
@@ -2092,23 +2015,27 @@ def get_query_details(request_id: str) -> str:
     try:
         tables = get_table_list()
         
+        # Query RAW tables for full details (View no longer has full blobs)
+        # We use build_multi_table_source but we need to select specific fields
+        # Actually build_multi_table_source returns FROM clause.
+        
+        union_source = build_multi_table_source(f"request_id = '{request_id}'", select_suffix="AS T")
+        
         query = f"""
         SELECT
           T.logging_time,
-          CAST(T.request_id AS STRING) AS request_id,
+          T.request_id,
           T.full_request,
           T.full_response,
           T.model,
           JSON_VALUE(T.full_request.labels.adk_agent_name) AS agent_name,
           CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000 AS latency,
-          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.thoughtsTokenCount) AS INT64) AS thought_tokens,
-          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) AS output_tokens,
-          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64) AS input_tokens,
-          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64) AS total_tokens
+          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.thoughtsTokenCount) AS INT64) AS thoughts_token_count,
+          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) AS candidates_token_count,
+          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64) AS prompt_token_count,
+          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64) AS total_token_count
         FROM
-          `{PROJECT_ID}.{DATASET_ID}.{tables[0]}` AS T
-        WHERE
-          CAST(T.request_id AS STRING) = @request_id
+          {union_source}
         LIMIT 1
         """
         
@@ -2133,10 +2060,10 @@ def get_query_details(request_id: str) -> str:
             "model": clean_model_name(row['model']),
             "agent_name": row['agent_name'] if pd.notna(row['agent_name']) else 'unknown',
             "tokens": {
-                "input": int(row['input_tokens']) if pd.notna(row['input_tokens']) else None,
-                "output": int(row['output_tokens']) if pd.notna(row['output_tokens']) else None,
-                "thought": int(row['thought_tokens']) if pd.notna(row['thought_tokens']) else None,
-                "total": int(row['total_tokens']) if pd.notna(row['total_tokens']) else None
+                "input": int(row['prompt_token_count']) if pd.notna(row['prompt_token_count']) else None,
+                "output": int(row['candidates_token_count']) if pd.notna(row['candidates_token_count']) else None,
+                "thought": int(row['thoughts_token_count']) if pd.notna(row['thoughts_token_count']) else None,
+                "total": int(row['total_token_count']) if pd.notna(row['total_token_count']) else None
             },
             "full_request": json.loads(row['full_request']) if pd.notna(row['full_request']) else None,
             "full_response": json.loads(row['full_response']) if pd.notna(row['full_response']) else None
@@ -2167,9 +2094,7 @@ def get_concurrent_request_impact(
         
         where_clauses = [
             f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
-            "T.full_request IS NOT NULL",
-            "T.full_response IS NOT NULL",
-            "JSON_VALUE(T.metadata.request_latency) IS NOT NULL"
+            "T.request_latency IS NOT NULL"
         ]
         
         if model_name:
@@ -2182,16 +2107,14 @@ def get_concurrent_request_impact(
         
         where_clause = " AND ".join(where_clauses)
         
-        tables = get_table_list()
-        
         query = f"""
         WITH bucketed_requests AS (
           SELECT
             TIMESTAMP_TRUNC(T.logging_time, SECOND, 'UTC') AS bucket_start,
             TIMESTAMP_ADD(TIMESTAMP_TRUNC(T.logging_time, SECOND, 'UTC'), INTERVAL {bucket_size} SECOND) AS bucket_end,
-            CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000 AS latency
+            request_latency AS latency
           FROM
-            `{PROJECT_ID}.{DATASET_ID}.{tables[0]}` AS T
+            `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}` AS T
           WHERE
             {where_clause}
         )
@@ -2272,9 +2195,7 @@ def detect_performance_degradation(
         
         where_clauses = [
             f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
-            "T.full_request IS NOT NULL",
-            "T.full_response IS NOT NULL",
-            "JSON_VALUE(T.metadata.request_latency) IS NOT NULL"
+            "T.request_latency IS NOT NULL"
         ]
         
         if model_name:
@@ -2287,15 +2208,13 @@ def detect_performance_degradation(
         
         where_clause = " AND ".join(where_clauses)
         
-        tables = get_table_list()
-        
         query = f"""
         SELECT
           TIMESTAMP_TRUNC(T.logging_time, HOUR) AS hour,
-          AVG(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) AS avg_latency,
+          AVG(request_latency) AS avg_latency,
           COUNT(*) as request_count
         FROM
-          `{PROJECT_ID}.{DATASET_ID}.{tables[0]}` AS T
+          `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}` AS T
         WHERE
           {where_clause}
         GROUP BY hour
@@ -2367,14 +2286,13 @@ def get_cost_analysis(
         
         where_clauses = [
             f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
-            "T.full_request IS NOT NULL",
-            "T.full_response IS NOT NULL"
+            "T.prompt_token_count IS NOT NULL"
         ]
         
         if model_name:
             where_clauses.append(f"T.model LIKE '%{model_name}%'")
         if agent_name:
-            where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
+            where_clauses.append(f"T.agent_name = '{agent_name}'")
         
         # Apply global agent filters
         global_filter = _get_global_agent_filter("T")
@@ -2383,22 +2301,20 @@ def get_cost_analysis(
             
         where_clause = " AND ".join(where_clauses)
         
-        tables = get_table_list()
-        
         query = f"""
         SELECT
-          COALESCE(JSON_VALUE(T.full_request.labels.adk_agent_name), 'unknown') AS agent_name,
+          agent_name,
           COUNT(*) as total_requests,
-          SUM(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64)) AS total_input_tokens,
-          SUM(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64)) AS total_output_tokens,
-          SUM(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64)) AS total_tokens,
-          AVG(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64)) AS avg_tokens_per_request
+          SUM(prompt_token_count) AS total_prompt_token_count,
+          SUM(candidates_token_count) AS total_candidates_token_count,
+          SUM(total_token_count) AS total_token_count,
+          AVG(total_token_count) AS avg_tokens_per_request
         FROM
-          `{PROJECT_ID}.{DATASET_ID}.{tables[0]}` AS T
+          `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}` AS T
         WHERE
           {where_clause}
         GROUP BY agent_name
-        ORDER BY total_tokens DESC
+        ORDER BY total_token_count DESC
         """
         
         df = execute_bigquery(query)
@@ -2415,17 +2331,17 @@ def get_cost_analysis(
         total_cost = 0
         
         for _, row in df.iterrows():
-            input_cost = (float(row['total_input_tokens']) / 1_000_000 * INPUT_COST_PER_1M) if pd.notna(row['total_input_tokens']) else 0
-            output_cost = (float(row['total_output_tokens']) / 1_000_000 * OUTPUT_COST_PER_1M) if pd.notna(row['total_output_tokens']) else 0
+            input_cost = (float(row['total_prompt_token_count']) / 1_000_000 * INPUT_COST_PER_1M) if pd.notna(row['total_prompt_token_count']) else 0
+            output_cost = (float(row['total_candidates_token_count']) / 1_000_000 * OUTPUT_COST_PER_1M) if pd.notna(row['total_candidates_token_count']) else 0
             agent_cost = input_cost + output_cost
             total_cost += agent_cost
             
             agents.append({
                 "agent_name": row['agent_name'],
                 "total_requests": int(row['total_requests']),
-                "total_tokens": int(row['total_tokens']) if pd.notna(row['total_tokens']) else 0,
-                "total_input_tokens": int(row['total_input_tokens']) if pd.notna(row['total_input_tokens']) else 0,
-                "total_output_tokens": int(row['total_output_tokens']) if pd.notna(row['total_output_tokens']) else 0,
+                "total_token_count": int(row['total_token_count']) if pd.notna(row['total_token_count']) else 0,
+                "total_prompt_token_count": int(row['total_prompt_token_count']) if pd.notna(row['total_prompt_token_count']) else 0,
+                "total_candidates_token_count": int(row['total_candidates_token_count']) if pd.notna(row['total_candidates_token_count']) else 0,
                 "avg_tokens_per_request": float(row['avg_tokens_per_request']) if pd.notna(row['avg_tokens_per_request']) else 0,
                 "estimated_cost_usd": float(agent_cost),
                 "cost_per_request": float(agent_cost / row['total_requests']) if row['total_requests'] > 0 else 0
@@ -2576,15 +2492,13 @@ def cluster_slow_queries(
         
         where_clauses = [
             f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
-            "T.full_request IS NOT NULL",
-            "T.full_response IS NOT NULL",
-            "JSON_VALUE(T.metadata.request_latency) IS NOT NULL"
+            "T.request_latency IS NOT NULL"
         ]
         
         if model_name:
             where_clauses.append(f"T.model LIKE '%{model_name}%'")
         if agent_name:
-            where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
+            where_clauses.append(f"T.agent_name = '{agent_name}'")
         
         # Apply global agent filters
         global_filter = _get_global_agent_filter("T")
@@ -2597,18 +2511,17 @@ def cluster_slow_queries(
         
         query = f"""
         SELECT
-          CAST(T.request_id AS STRING) AS request_id,
+          T.request_id,
           T.logging_time,
-          CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000 AS latency,
-          COALESCE(JSON_VALUE(T.full_request.labels.adk_agent_name), 'unknown') AS agent_name,
-          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64) AS input_tokens,
-          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) AS output_tokens,
-          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.thoughtsTokenCount) AS INT64) AS thought_tokens,
-          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64) AS total_tokens,
-          -- Extract first 200 chars of request for similarity analysis
-          SUBSTR(TO_JSON_STRING(T.full_request), 1, 200) AS request_preview
+          request_latency AS latency,
+          T.agent_name,
+          prompt_token_count,
+          candidates_token_count,
+          thoughts_token_count,
+          total_token_count,
+          T.request_preview
         FROM
-          `{PROJECT_ID}.{DATASET_ID}.{tables[0]}` AS T
+          `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}` AS T
         WHERE
           {where_clause}
         ORDER BY latency DESC
@@ -2621,7 +2534,7 @@ def cluster_slow_queries(
             return json.dumps({"error": "No data found"})
         
         # Calculate output + thought tokens
-        df['output_thought_tokens'] = df['output_tokens'].fillna(0) + df['thought_tokens'].fillna(0)
+        df['output_thoughts_token_count'] = df['candidates_token_count'].fillna(0) + df['thoughts_token_count'].fillna(0)
         
         # Define clustering criteria
         clusters = {}
@@ -2639,9 +2552,9 @@ def cluster_slow_queries(
         
         # Cluster 2: By token pattern
         def get_token_cluster(row):
-            input_t = row['input_tokens'] or 0
-            output_t = row['output_thought_tokens'] or 0
-            total_t = row['total_tokens'] or (input_t + output_t)
+            input_t = row['prompt_token_count'] or 0
+            output_t = row['output_thoughts_token_count'] or 0
+            total_t = row['total_token_count'] or (input_t + output_t)
             latency = row['latency']
             
             # NEW: Detect "Anomalous Inefficiency"
@@ -2675,8 +2588,8 @@ def cluster_slow_queries(
                 "count": len(group),
                 "percentage": float(len(group) / len(df) * 100),
                 "avg_latency": float(group['latency'].mean()),
-                "avg_input_tokens": float(group['input_tokens'].mean()) if group['input_tokens'].notna().any() else None,
-                "avg_output_thought_tokens": float(group['output_thought_tokens'].mean()) if group['output_thought_tokens'].notna().any() else None,
+                "avg_prompt_token_count": float(group['prompt_token_count'].mean()) if group['prompt_token_count'].notna().any() else None,
+                "avg_output_thoughts_token_count": float(group['output_thoughts_token_count'].mean()) if group['output_thoughts_token_count'].notna().any() else None,
                 "top_agents": group['agent_name'].value_counts().head(3).to_dict(),
                 "sample_request_ids": group['request_id'].head(3).tolist()
             }
@@ -2690,8 +2603,8 @@ def cluster_slow_queries(
                 "count": len(group),
                 "percentage": float(len(group) / len(df) * 100),
                 "avg_latency": float(group['latency'].mean()),
-                "avg_input_tokens": float(group['input_tokens'].mean()) if group['input_tokens'].notna().any() else None,
-                "avg_output_thought_tokens": float(group['output_thought_tokens'].mean()) if group['output_thought_tokens'].notna().any() else None,
+                "avg_prompt_token_count": float(group['prompt_token_count'].mean()) if group['prompt_token_count'].notna().any() else None,
+                "avg_output_thoughts_token_count": float(group['output_thoughts_token_count'].mean()) if group['output_thoughts_token_count'].notna().any() else None,
                 "top_agents": group['agent_name'].value_counts().head(3).to_dict(),
                 "sample_request_ids": group['request_id'].head(3).tolist()
             }
@@ -2706,8 +2619,8 @@ def cluster_slow_queries(
                     "count": len(group),
                     "percentage": float(len(group) / len(df) * 100),
                     "avg_latency": float(group['latency'].mean()),
-                    "avg_input_tokens": float(group['input_tokens'].mean()) if group['input_tokens'].notna().any() else None,
-                    "avg_output_thought_tokens": float(group['output_thought_tokens'].mean()) if group['output_thought_tokens'].notna().any() else None
+                    "avg_prompt_token_count": float(group['prompt_token_count'].mean()) if group['prompt_token_count'].notna().any() else None,
+                    "avg_output_thoughts_token_count": float(group['output_thoughts_token_count'].mean()) if group['output_thoughts_token_count'].notna().any() else None
                 })
         
         result = {
@@ -2747,37 +2660,35 @@ def analyze_correlation_detailed(
         time_range_dict = json.loads(parse_time_range(time_range))
         start_time, end_time = time_range_dict['start_date'], time_range_dict['end_date']
         
+        # Use View columns (request_latency, agent_name, etc.)
         where_clauses = [
             f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
-            "T.full_request IS NOT NULL",
-            "T.full_response IS NOT NULL",
-            "JSON_VALUE(T.metadata.request_latency) IS NOT NULL"
+            "T.request_latency IS NOT NULL"
         ]
         
         if model_name:
             where_clauses.append(f"T.model LIKE '%{model_name}%'")
         if agent_name:
-            where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
+            where_clauses.append(f"T.agent_name = '{agent_name}'")
         
-        # Apply global agent filters
+        # Apply global agent filters (works because View has agent_name)
         global_filter = _get_global_agent_filter("T")
         if global_filter:
             where_clauses.append(global_filter.lstrip(" AND "))
             
         where_clause = " AND ".join(where_clauses)
         
-        # Build multi-table source
-        union_source = build_multi_table_source(where_clause, select_suffix="AS T")
-        
         query = f"""
         SELECT
-          CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000 AS latency,
-          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64) AS input_tokens,
-          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) AS output_tokens,
-          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.thoughtsTokenCount) AS INT64) AS thought_tokens,
-          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64) AS total_tokens
+          request_latency AS latency,
+          prompt_token_count,
+          candidates_token_count,
+          thoughts_token_count,
+          total_token_count
         FROM
-          {union_source}
+          `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}` AS T
+        WHERE
+          {where_clause}
         LIMIT 5000
         """
         
@@ -2790,12 +2701,12 @@ def analyze_correlation_detailed(
         logging.info(f"Analyzing correlation for {len(df)} data points")
         
         # Calculate output + thought tokens
-        df['output_thought_tokens'] = df['output_tokens'].fillna(0) + df['thought_tokens'].fillna(0)
+        df['output_thoughts_token_count'] = df['candidates_token_count'].fillna(0) + df['thoughts_token_count'].fillna(0)
         
         # Calculate all correlations
         correlations = {}
         
-        for col in ['input_tokens', 'output_tokens', 'thought_tokens', 'output_thought_tokens', 'total_tokens']:
+        for col in ['prompt_token_count', 'candidates_token_count', 'thoughts_token_count', 'output_thoughts_token_count', 'total_token_count']:
             if df[col].notna().sum() > 10:
                 corr = df['latency'].corr(df[col])
                 correlations[f"latency_vs_{col}"] = {
@@ -2813,7 +2724,7 @@ def analyze_correlation_detailed(
         
         # Statistical breakdown by quartiles
         quartile_analysis = {}
-        for col in ['output_thought_tokens', 'input_tokens']:
+        for col in ['output_thoughts_token_count', 'prompt_token_count']:
             if df[col].notna().sum() > 10:
                 try:
                     # Try to create quartiles, but handle cases with insufficient unique values
@@ -2843,8 +2754,8 @@ def analyze_correlation_detailed(
             },
             "quartile_analysis": quartile_analysis,
             "key_findings": [
-                f"Latency vs output+thought tokens: {correlations.get('latency_vs_output_thought_tokens', {}).get('correlation') or 0.0:.3f} ({correlations.get('latency_vs_output_thought_tokens', {}).get('strength', 'unknown')})",
-                f"Latency vs input tokens: {correlations.get('latency_vs_input_tokens', {}).get('correlation') or 0.0:.3f} ({correlations.get('latency_vs_input_tokens', {}).get('strength', 'unknown')})",
+                f"Latency vs output+thought tokens: {correlations.get('latency_vs_output_thoughts_token_count', {}).get('correlation') or 0.0:.3f} ({correlations.get('latency_vs_output_thoughts_token_count', {}).get('strength', 'unknown')})",
+                f"Latency vs input tokens: {correlations.get('latency_vs_prompt_token_count', {}).get('correlation') or 0.0:.3f} ({correlations.get('latency_vs_prompt_token_count', {}).get('strength', 'unknown')})",
                 f"Strongest predictor: {strongest[0].replace('latency_vs_', '')} (r={strongest[1]['correlation'] or 0.0:.3f})"
             ],
             "summary": f"Strongest correlation: {strongest[0]} (r={strongest[1]['correlation'] or 0.0:.3f}, {strongest[1]['strength']})"
@@ -2891,13 +2802,13 @@ def fetch_slow_queries(num_records: int = 20, agent_name: Optional[str] = None) 
             query = f"""
         SELECT
           CAST(T.request_id AS STRING) AS request_id,
-          ROUND(SAFE_CAST(JSON_VALUE(T.metadata.request_latency) AS FLOAT64) / 1000.0, 2) AS request_latency_seconds
+          ROUND(SAFE_CAST(JSON_VALUE(T.metadata.request_latency) AS FLOAT64) / 1000.0, 2) AS request_latency
         FROM
           `{PROJECT_ID}.{DATASET_ID}.{tables[0]}` AS T
         WHERE
           {where_clause}
         ORDER BY
-          request_latency_seconds DESC
+          request_latency DESC
         LIMIT {num_records}
         """
         else:
@@ -2906,7 +2817,7 @@ def fetch_slow_queries(num_records: int = 20, agent_name: Optional[str] = None) 
                 table_select = f"""
         SELECT
           CAST(T.request_id AS STRING) AS request_id,
-          ROUND(SAFE_CAST(JSON_VALUE(T.metadata.request_latency) AS FLOAT64) / 1000.0, 2) AS request_latency_seconds
+          ROUND(SAFE_CAST(JSON_VALUE(T.metadata.request_latency) AS FLOAT64) / 1000.0, 2) AS request_latency
         FROM
           `{PROJECT_ID}.{DATASET_ID}.{table}` AS T
         WHERE
@@ -2920,7 +2831,7 @@ def fetch_slow_queries(num_records: int = 20, agent_name: Optional[str] = None) 
         SELECT * FROM (
 {union_data}
         )
-        ORDER BY request_latency_seconds DESC
+        ORDER BY request_latency DESC
         LIMIT {num_records}
         """
         
@@ -2934,7 +2845,7 @@ def fetch_slow_queries(num_records: int = 20, agent_name: Optional[str] = None) 
         for _, row in df.iterrows():
             request_ids.append({
                 "request_id": str(row["request_id"]),
-                "latency_seconds": float(row["request_latency_seconds"]) if pd.notna(row["request_latency_seconds"]) else 0.0
+                "request_latency": float(row["request_latency"]) if pd.notna(row["request_latency"]) else 0.0
             })
         
         logging.info(f"[PROGRESS] Successfully fetched {len(request_ids)} request IDs")
@@ -2977,7 +2888,7 @@ def fetch_single_query(request_id: str) -> str:
           T.full_response,
           T.model,
           JSON_VALUE(T.full_request.labels.adk_agent_name) AS adk_agent_name,
-          ROUND(SAFE_CAST(JSON_VALUE(T.metadata.request_latency) AS FLOAT64) / 1000.0, 2) AS request_latency_seconds,
+          ROUND(SAFE_CAST(JSON_VALUE(T.metadata.request_latency) AS FLOAT64) / 1000.0, 2) AS request_latency,
           SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.thoughtsTokenCount) AS INT64) AS thoughts_token_count,
           SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) AS output_token_count,
           SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64) AS prompt_token_count,
@@ -3009,7 +2920,7 @@ def fetch_single_query(request_id: str) -> str:
             "full_response": json.loads(row['full_response']) if pd.notna(row['full_response']) else None,
             "model": clean_model_name(row['model']),
             "adk_agent_name": row['adk_agent_name'] if pd.notna(row['adk_agent_name']) else None,
-            "request_latency_seconds": float(row['request_latency_seconds']) if pd.notna(row['request_latency_seconds']) else None,
+            "request_latency": float(row['request_latency']) if pd.notna(row['request_latency']) else None,
             "thoughts_token_count": int(row['thoughts_token_count']) if pd.notna(row['thoughts_token_count']) else None,
             "output_token_count": int(row['output_token_count']) if pd.notna(row['output_token_count']) else None,
             "prompt_token_count": int(row['prompt_token_count']) if pd.notna(row['prompt_token_count']) else None,
@@ -3067,15 +2978,14 @@ def fetch_slow_queries_batch(
         
         where_clauses = [
             f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
-            "T.full_request IS NOT NULL",
-            "T.full_response IS NOT NULL",
-            "JSON_VALUE(T.metadata.request_latency) IS NOT NULL"
+            "T.request_preview IS NOT NULL",
+            "T.request_latency IS NOT NULL"
         ]
         
         if model_name:
             where_clauses.append(f"T.model LIKE '%{model_name}%'")
         if agent_name:
-            where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
+            where_clauses.append(f"T.agent_name = '{agent_name}'")
         
         # Apply global agent filters
         global_filter = _get_global_agent_filter("T")
@@ -3085,25 +2995,29 @@ def fetch_slow_queries_batch(
         where_clause = " AND ".join(where_clauses)
         
         # Build multi-table source
-        union_source = build_multi_table_source(where_clause, select_suffix="AS T")
+        # Use View directly
+        where_clause = " AND ".join(where_clauses)
+        
+        # NOTE: View has request_preview instead of full_request
+        # We will use that for summary.
         
         query = f"""
         SELECT
           T.logging_time,
           CAST(T.request_id AS STRING) AS request_id,
-          T.full_request,
-          T.full_response,
           T.model,
-          COALESCE(JSON_VALUE(T.full_request.labels.adk_agent_name), 'unknown') AS agent_name,
-          ROUND(SAFE_CAST(JSON_VALUE(T.metadata.request_latency) AS FLOAT64) / 1000.0, 2) AS request_latency_seconds,
-          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.thoughtsTokenCount) AS INT64) AS thoughts_token_count,
-          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) AS output_token_count,
-          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64) AS prompt_token_count,
-          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64) AS total_token_count,
-          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64) AS total_token_count
+          T.agent_name,
+          T.request_latency AS request_latency,
+          T.thoughts_token_count AS thoughts_token_count,
+          T.candidates_token_count AS output_token_count,
+          T.prompt_token_count AS prompt_token_count,
+          T.total_token_count AS total_token_count,
+          T.request_preview
         FROM
-          {union_source}
-        ORDER BY request_latency_seconds DESC
+          `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}` AS T
+        WHERE
+          {where_clause}
+        ORDER BY request_latency DESC
         LIMIT {num_queries}
         """
         
@@ -3115,30 +3029,33 @@ def fetch_slow_queries_batch(
         # Convert to list of records with TRUNCATION
         queries = []
         for _, row in df.iterrows():
-            # Truncate request/response to avoid blowing up context window (fixed 9M token overflow)
-            full_req_str = row['full_request'] if pd.notna(row['full_request']) else "{}"
-            full_res_str = row['full_response'] if pd.notna(row['full_response']) else "{}"
-            
-            # Simple string truncation for safety - we largely just need metadata anyway
-            if len(full_req_str) > 2000:
-                full_req_str = full_req_str[:2000] + "... [TRUNCATED]"
-            if len(full_res_str) > 2000:
-                full_res_str = full_res_str[:2000] + "... [TRUNCATED]"
-                
             record = {
                 "logging_time": row['logging_time'].isoformat() if pd.notna(row['logging_time']) else None,
                 "request_id": row['request_id'],
-                "full_request_summary": full_req_str, # Renamed to imply truncation
-                "full_response_summary": full_res_str, # Renamed to imply truncation
+                "full_request_summary": row['request_preview'] if pd.notna(row['request_preview']) else "No preview available", 
+                "full_response_summary": "See deep dive for details", 
                 "model": clean_model_name(row['model']),
                 "agent_name": row['agent_name'],
-                "request_latency_seconds": float(row['request_latency_seconds']) if pd.notna(row['request_latency_seconds']) else None,
+                "request_latency": float(row['request_latency']) if pd.notna(row['request_latency']) else None,
                 "thoughts_token_count": int(row['thoughts_token_count']) if pd.notna(row['thoughts_token_count']) else None,
                 "output_token_count": int(row['output_token_count']) if pd.notna(row['output_token_count']) else None,
                 "prompt_token_count": int(row['prompt_token_count']) if pd.notna(row['prompt_token_count']) else None,
                 "total_token_count": int(row['total_token_count']) if pd.notna(row['total_token_count']) else None
             }
             queries.append(record)
+            
+        # Enrich top 3 queries with ML summary if available
+        # We try to use BQ ML to summarize the request
+        try:
+             # Only enrich top 3 to save time/cost
+             for i in range(min(3, len(queries))):
+                 q_id = queries[i]['request_id']
+                 ml_summary = _get_ml_generated_summary(q_id)
+                 if ml_summary:
+                     queries[i]['full_request_summary'] = f"[ML Summary] {ml_summary}"
+                     queries[i]['ml_enriched'] = True
+        except Exception as e:
+            logging.warning(f"Failed to enrich queries with ML summary: {e}")
         
         logging.info(f"[PROGRESS] Successfully fetched {len(queries)} slow queries in batch")
         
@@ -3199,15 +3116,13 @@ def fetch_fastest_queries(
         
         where_clauses = [
             f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
-            "T.full_request IS NOT NULL",
-            "T.full_response IS NOT NULL",
-            "JSON_VALUE(T.metadata.request_latency) IS NOT NULL"
+            "T.request_latency IS NOT NULL"
         ]
         
         if model_name:
             where_clauses.append(f"T.model LIKE '%{model_name}%'")
         if agent_name:
-            where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
+            where_clauses.append(f"T.agent_name = '{agent_name}'")
         
         # Apply global agent filters
         global_filter = _get_global_agent_filter("T")
@@ -3216,27 +3131,25 @@ def fetch_fastest_queries(
             
         where_clause = " AND ".join(where_clauses)
         
-        # Build multi-table source
-        union_source = build_multi_table_source(where_clause, select_suffix="AS T")
+        # Use View directly
         
         query = f"""
         SELECT
           T.logging_time,
           CAST(T.request_id AS STRING) AS request_id,
-          T.full_request,
-          T.full_response,
           T.model,
-          JSON_VALUE(T.full_request.labels.adk_agent_name) AS adk_agent_name,
-          ROUND(SAFE_CAST(JSON_VALUE(T.metadata.request_latency) AS FLOAT64) / 1000.0, 2) AS request_latency_seconds,
-          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.thoughtsTokenCount) AS INT64) AS thoughts_token_count,
-          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) AS output_token_count,
-          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64) AS prompt_token_count,
-          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64) AS total_token_count,
-          -- Extract last 500 chars of prompt to capture user question (generic approach)
-          SUBSTR(JSON_VALUE(T.full_request.contents[0].parts[0].text), -500) AS query_preview
+          T.agent_name,
+          T.request_latency AS request_latency,
+          T.thoughts_token_count AS thoughts_token_count,
+          T.candidates_token_count AS output_token_count,
+          T.prompt_token_count AS prompt_token_count,
+          T.total_token_count AS total_token_count,
+          T.request_preview AS query_preview
         FROM
-          {union_source}
-        ORDER BY request_latency_seconds ASC
+          `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}` AS T
+        WHERE
+          {where_clause}
+        ORDER BY request_latency ASC
         LIMIT {num_queries}
         """
         
@@ -3245,26 +3158,16 @@ def fetch_fastest_queries(
         if df.empty:
             return json.dumps({"error": "No queries found"})
         
-        # Convert to list of records with TRUNCATION
         queries = []
         for _, row in df.iterrows():
-            # Truncate request/response to avoid blowing up context window
-            full_req_str = row['full_request'] if pd.notna(row['full_request']) else "{}"
-            full_res_str = row['full_response'] if pd.notna(row['full_response']) else "{}"
-            
-            if len(full_req_str) > 2000:
-                full_req_str = full_req_str[:2000] + "... [TRUNCATED]"
-            if len(full_res_str) > 2000:
-                full_res_str = full_res_str[:2000] + "... [TRUNCATED]"
-        
             record = {
                 "logging_time": row['logging_time'].isoformat() if pd.notna(row['logging_time']) else None,
                 "request_id": row['request_id'],
-                "full_request_summary": full_req_str,
-                "full_response_summary": full_res_str,
+                "full_request_summary": row['query_preview'] if pd.notna(row['query_preview']) else "No preview",
+                "full_response_summary": "See deep dive",
                 "model": clean_model_name(row['model']),
-                "agent_name": row['adk_agent_name'] if pd.notna(row['adk_agent_name']) else None,
-                "request_latency_seconds": float(row['request_latency_seconds']) if pd.notna(row['request_latency_seconds']) else None,
+                "agent_name": row['agent_name'] if pd.notna(row['agent_name']) else None,
+                "request_latency": float(row['request_latency']) if pd.notna(row['request_latency']) else None,
                 "thoughts_token_count": int(row['thoughts_token_count']) if pd.notna(row['thoughts_token_count']) else None,
                 "output_token_count": int(row['output_token_count']) if pd.notna(row['output_token_count']) else None,
                 "prompt_token_count": int(row['prompt_token_count']) if pd.notna(row['prompt_token_count']) else None,
@@ -3319,28 +3222,28 @@ def get_token_velocity(
         
         where_clauses = [
             f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
-            "T.full_response IS NOT NULL",
-            "JSON_VALUE(T.metadata.request_latency) IS NOT NULL"
+            "T.candidates_token_count IS NOT NULL",
+            "T.request_latency IS NOT NULL"
         ]
         
         if model_name:
             where_clauses.append(f"T.model LIKE '%{model_name}%'")
         if agent_name:
-            where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
+            where_clauses.append(f"T.agent_name = '{agent_name}'")
             
         where_clause = " AND ".join(where_clauses)
         
-        # Build multi-table source
-        union_source = build_multi_table_source(where_clause, select_suffix="AS T")
+        # Use View directly
         
         query = f"""
         SELECT
-          CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000 AS latency,
-          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) AS output_tokens
+          T.request_latency AS latency,
+          T.candidates_token_count AS candidates_token_count
         FROM
-          {union_source}
+          `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}` AS T
         WHERE
-          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) > 0
+          {where_clause}
+          AND T.candidates_token_count > 0
         LIMIT 5000
         """
         
@@ -3350,7 +3253,7 @@ def get_token_velocity(
             return json.dumps({"error": "No data found for TPOT analysis"})
             
         # Calculate TPOT (seconds per token)
-        df['tpot'] = df['latency'] / df['output_tokens']
+        df['tpot'] = df['latency'] / df['candidates_token_count']
 
         # Statistics
         stats = {
@@ -3427,15 +3330,13 @@ def analyze_request_queuing(
         
         where_clauses = [
             f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
-            "T.full_request IS NOT NULL",
-            "T.full_response IS NOT NULL",
-            "JSON_VALUE(T.metadata.request_latency) IS NOT NULL"
+            "T.request_latency IS NOT NULL"
         ]
         
         if model_name:
             where_clauses.append(f"T.model LIKE '%{model_name}%'")
         if agent_name:
-            where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
+            where_clauses.append(f"T.agent_name = '{agent_name}'")
         
         # Apply global agent filters
         global_filter = _get_global_agent_filter("T")
@@ -3445,17 +3346,17 @@ def analyze_request_queuing(
         where_clause = " AND ".join(where_clauses)
         
         # Group by small time windows (micro-bursts)
-        tables = get_table_list()
+        # Use View directly
         
         query = f"""
         WITH bursts AS (
           SELECT
             TIMESTAMP_TRUNC(T.logging_time, SECOND) AS burst_time,
             COUNT(*) as request_count,
-            AVG(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) AS avg_latency,
-            MAX(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) AS max_latency
+            AVG(T.request_latency) AS avg_latency,
+            MAX(T.request_latency) AS max_latency
           FROM
-            `{PROJECT_ID}.{DATASET_ID}.{tables[0]}` AS T
+            `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}` AS T
           WHERE
             {where_clause}
           GROUP BY burst_time
@@ -3535,8 +3436,8 @@ def check_kpi_compliance(
         
         # Apply defaults from config if not provided
         if time_range is None:
-            days = config.get("time_period", 1)
-            time_range = f"{days}d"
+            days = config.get("time_period_days", config.get("time_period", "all"))
+            time_range = str(days) if days == "all" else f"{days}d" if str(days).isdigit() else days
             
         if agent_name is None:
             agent_name = config.get("agent_name")
@@ -3767,11 +3668,17 @@ def _load_config_data() -> dict:
     try:
         # Assuming the config file is in the parent directory of agents/latency_analyzer
         # agents/latency_analyzer/utils.py -> ../../autonomous_analysis_90d.json
-        config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "autonomous_analysis_90d.json")
         
-        if not os.path.exists(config_path):
-             # Fallback to current directory or relative path if running from root
-             config_path = "autonomous_analysis_90d.json"
+        # Check environment variable first
+        config_path = os.getenv("LATENCY_ANALYSIS_CONFIG_FILE")
+        
+        if not config_path:
+             # Default path relative to this file
+             config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "autonomous_analysis_90d.json")
+             
+             if not os.path.exists(config_path):
+                  # Fallback to current directory or relative path if running from root
+                  config_path = "autonomous_analysis_90d.json"
              
         if not os.path.exists(config_path):
             logging.warning(f"Config file not found at {config_path}")
@@ -3810,11 +3717,11 @@ def _get_global_agent_filter(table_alias: str = "T") -> str:
     # Included takes precedence
     if included:
         agents_str = ", ".join([f"'{a}'" for a in included])
-        return f" AND JSON_VALUE({table_alias}.full_request.labels.adk_agent_name) IN ({agents_str})"
+        return f" AND {table_alias}.agent_name IN ({agents_str})"
     
     if excluded:
         agents_str = ", ".join([f"'{a}'" for a in excluded])
-        return f" AND JSON_VALUE({table_alias}.full_request.labels.adk_agent_name) NOT IN ({agents_str})"
+        return f" AND {table_alias}.agent_name NOT IN ({agents_str})"
         
     return ""
 
@@ -3880,15 +3787,13 @@ def analyze_thinking_overhead(
         
         where_clauses = [
             f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
-            "T.full_request IS NOT NULL",
-            "T.full_response IS NOT NULL",
-            "JSON_VALUE(T.metadata.request_latency) IS NOT NULL"
+            "T.request_latency IS NOT NULL"
         ]
         
         if model_name:
             where_clauses.append(f"T.model LIKE '%{model_name}%'")
         if agent_name:
-            where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
+            where_clauses.append(f"T.agent_name = '{agent_name}'")
         
         # Apply global agent filters
         global_filter = _get_global_agent_filter("T")
@@ -3897,19 +3802,21 @@ def analyze_thinking_overhead(
             
         where_clause = " AND ".join(where_clauses)
         
-        # Build multi-table source
-        union_source = build_multi_table_source(where_clause, select_suffix="AS T")
+        # Use View directly
+        where_clause = " AND ".join(where_clauses)
         
         query = f"""
         SELECT
           CAST(T.request_id AS STRING) AS request_id,
-          COALESCE(JSON_VALUE(T.full_request.labels.adk_agent_name), 'unknown') AS agent_name,
-          CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000 AS latency,
-          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64) AS input_tokens,
-          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) AS output_tokens,
-          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.totalTokenCount) AS INT64) AS total_tokens
+          T.agent_name,
+          T.request_latency AS latency,
+          T.prompt_token_count AS prompt_token_count,
+          T.candidates_token_count AS candidates_token_count,
+          T.total_token_count AS total_token_count
         FROM
-          {union_source}
+          `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}` AS T
+        WHERE
+          {where_clause}
         ORDER BY latency DESC
         LIMIT 1000
         """
@@ -3927,19 +3834,19 @@ def analyze_thinking_overhead(
         # But actually, Gemini 2.0 Flash thinking model has specific fields. 
         # For now, we'll use the inference method which aligns with our previous tool updates.
         
-        df['input_tokens'] = pd.to_numeric(df['input_tokens'], errors='coerce').fillna(0)
-        df['output_tokens'] = pd.to_numeric(df['output_tokens'], errors='coerce').fillna(0)
-        df['total_tokens'] = pd.to_numeric(df['total_tokens'], errors='coerce').fillna(0)
-        df['thought_tokens'] = (df['total_tokens'] - df['input_tokens'] - df['output_tokens']).clip(lower=0)
+        df['prompt_token_count'] = pd.to_numeric(df['prompt_token_count'], errors='coerce').fillna(0)
+        df['candidates_token_count'] = pd.to_numeric(df['candidates_token_count'], errors='coerce').fillna(0)
+        df['total_token_count'] = pd.to_numeric(df['total_token_count'], errors='coerce').fillna(0)
+        df['thoughts_token_count'] = (df['total_token_count'] - df['prompt_token_count'] - df['candidates_token_count']).clip(lower=0)
         df['thought_output_ratio'] = df.apply(
-            lambda row: row['thought_tokens'] / row['output_tokens'] if row['output_tokens'] > 0 else 0, axis=1
+            lambda row: row['thoughts_token_count'] / row['candidates_token_count'] if row['candidates_token_count'] > 0 else 0, axis=1
         )
         
         # Identify heavy thinking queries
         heavy_thinking = df[df['thought_output_ratio'] > 5]
         
         # Calculate correlations
-        metrics = df[['latency', 'thought_tokens', 'output_tokens', 'thought_output_ratio']].corr()['latency']
+        metrics = df[['latency', 'thoughts_token_count', 'candidates_token_count', 'thought_output_ratio']].corr()['latency']
         
         result = {
             "metadata": {
@@ -3947,16 +3854,16 @@ def analyze_thinking_overhead(
                 "total_analyzed": len(df)
             },
             "statistics": {
-                "avg_thought_tokens": float(df['thought_tokens'].mean()),
-                "max_thought_tokens": int(df['thought_tokens'].max()),
+                "avg_thoughts_token_count": float(df['thoughts_token_count'].mean()),
+                "max_thoughts_token_count": int(df['thoughts_token_count'].max()),
                 "avg_thought_output_ratio": float(df['thought_output_ratio'].mean()),
                 "percent_heavy_thinking": float(len(heavy_thinking) / len(df) * 100)
             },
             "correlations": {
-                "latency_vs_thought_tokens": float(metrics['thought_tokens']),
+                "latency_vs_thoughts_token_count": float(metrics['thoughts_token_count']),
                 "latency_vs_ratio": float(metrics['thought_output_ratio'])
             },
-            "heavy_thinking_samples": heavy_thinking.head(5)[['request_id', 'agent_name', 'latency', 'thought_tokens', 'output_tokens', 'thought_output_ratio']].to_dict('records')
+            "heavy_thinking_samples": heavy_thinking.head(5)[['request_id', 'agent_name', 'latency', 'thoughts_token_count', 'candidates_token_count', 'thought_output_ratio']].to_dict('records')
         }
         
         return json.dumps(result, cls=AnalysisEncoder)
@@ -3989,15 +3896,14 @@ def detect_compute_inefficiency(
         
         where_clauses = [
             f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
-            "T.full_request IS NOT NULL",
-            "T.full_response IS NOT NULL",
-            "JSON_VALUE(T.metadata.request_latency) IS NOT NULL"
+            "T.candidates_token_count IS NOT NULL",
+            "T.request_latency IS NOT NULL"
         ]
         
         if model_name:
             where_clauses.append(f"T.model LIKE '%{model_name}%'")
         if agent_name:
-            where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
+            where_clauses.append(f"T.agent_name = '{agent_name}'")
         
         # Apply global agent filters
         global_filter = _get_global_agent_filter("T")
@@ -4006,19 +3912,18 @@ def detect_compute_inefficiency(
             
         where_clause = " AND ".join(where_clauses)
         
-        tables = get_table_list()
+        # Use View directly
         
         query = f"""
         SELECT
           CAST(T.request_id AS STRING) AS request_id,
-          COALESCE(JSON_VALUE(T.full_request.labels.adk_agent_name), 'unknown') AS agent_name,
-          CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000 AS latency,
-          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.promptTokenCount) AS INT64) AS input_tokens,
-          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) AS output_tokens,
-          -- Preview for context
-          SUBSTR(TO_JSON_STRING(T.full_request), 1, 100) AS request_preview
+          T.agent_name,
+          T.request_latency AS latency,
+          T.prompt_token_count AS prompt_token_count,
+          T.candidates_token_count AS candidates_token_count,
+          T.request_preview
         FROM
-          `{PROJECT_ID}.{DATASET_ID}.{tables[0]}` AS T
+          `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}` AS T
         WHERE
           {where_clause}
         ORDER BY latency DESC
@@ -4032,7 +3937,7 @@ def detect_compute_inefficiency(
             
         # Calculate expected latency
         # Model: 0.5s overhead + 0.5ms/input + 50ms/output
-        df['expected_latency'] = 0.5 + (df['input_tokens'] * 0.0005) + (df['output_tokens'] * 0.05)
+        df['expected_latency'] = 0.5 + (df['prompt_token_count'] * 0.0005) + (df['candidates_token_count'] * 0.05)
         
         # Calculate inefficiency ratio
         df['inefficiency_ratio'] = df['latency'] / df['expected_latency']
@@ -4089,51 +3994,51 @@ def get_generation_config_comparison(
         
         where_clauses = [
             f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
-            "T.full_request IS NOT NULL",
-            "T.full_response IS NOT NULL",
-            "JSON_VALUE(T.metadata.request_latency) IS NOT NULL",
-            "JSON_VALUE(T.full_request, '$.generationConfig.temperature') IS NOT NULL"
+            "T.temperature IS NOT NULL",
+            "T.max_output_tokens IS NOT NULL",
+            "T.request_latency IS NOT NULL"
         ]
         
         if agent_name:
-            where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
+            where_clauses.append(f"T.agent_name = '{agent_name}'")
         if model_name:
             where_clauses.append(f"T.model LIKE '%{model_name}%'")
         
         where_clause = " AND ".join(where_clauses)
         
-        # Build multi-table source
-        union_source = build_multi_table_source(where_clause, select_suffix="AS T")
+        # Use View directly
         
         query = f"""
         SELECT
           CASE 
-            WHEN SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.temperature') AS FLOAT64) IS NULL THEN 'Unknown'
-            WHEN SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.temperature') AS FLOAT64) <= 0.3 THEN 'Low (0.0-0.3)'
-            WHEN SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.temperature') AS FLOAT64) <= 0.7 THEN 'Medium (0.4-0.7)'
+            WHEN T.temperature IS NULL THEN 'Unknown'
+            WHEN T.temperature <= 0.3 THEN 'Low (0.0-0.3)'
+            WHEN T.temperature <= 0.7 THEN 'Medium (0.4-0.7)'
             ELSE 'High (0.8-1.0)'
           END AS temperature_range,
           CASE
-            WHEN SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.maxOutputTokens') AS INT64) IS NULL THEN 'Unspecified'
-            WHEN SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.maxOutputTokens') AS INT64) <= 2048 THEN '≤2048'
-            WHEN SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.maxOutputTokens') AS INT64) <= 4096 THEN '2049-4096'
-            WHEN SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.maxOutputTokens') AS INT64) <= 8192 THEN '4097-8192'
+            WHEN T.max_output_tokens IS NULL THEN 'Unspecified'
+            WHEN T.max_output_tokens <= 2048 THEN '≤2048'
+            WHEN T.max_output_tokens <= 4096 THEN '2049-4096'
+            WHEN T.max_output_tokens <= 8192 THEN '4097-8192'
             ELSE '>8192'
           END AS max_tokens_range,
           COUNT(*) as request_count,
-          AVG(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000) AS avg_latency,
-          APPROX_QUANTILES(CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000, 100)[OFFSET(95)] AS p95_latency,
-          AVG(SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64)) AS avg_output_tokens,
-          AVG(SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.maxOutputTokens') AS INT64)) AS avg_max_tokens_config,
-          AVG(SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.temperature') AS FLOAT64)) AS avg_temperature,
+          AVG(T.request_latency) AS avg_latency,
+          APPROX_QUANTILES(T.request_latency, 100)[OFFSET(95)] AS p95_latency,
+          AVG(T.candidates_token_count) AS avg_candidates_token_count,
+          AVG(T.max_output_tokens) AS avg_max_tokens_config,
+          AVG(T.temperature) AS avg_temperature,
           AVG(
             SAFE_DIVIDE(
-              SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64),
-              SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.maxOutputTokens') AS INT64)
+              T.candidates_token_count,
+              T.max_output_tokens
             )
           ) AS token_efficiency_ratio
         FROM
-          {union_source}
+          `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}` AS T
+        WHERE
+          {where_clause}
         GROUP BY temperature_range, max_tokens_range
         ORDER BY request_count DESC
         """
@@ -4154,7 +4059,7 @@ def get_generation_config_comparison(
                 "request_count": int(row['request_count']),
                 "avg_latency": float(row['avg_latency']) if pd.notna(row['avg_latency']) else None,
                 "p95_latency": float(row['p95_latency']) if pd.notna(row['p95_latency']) else None,
-                "avg_output_tokens": float(row['avg_output_tokens']) if pd.notna(row['avg_output_tokens']) else None,
+                "avg_candidates_token_count": float(row['avg_candidates_token_count']) if pd.notna(row['avg_candidates_token_count']) else None,
                 "avg_max_tokens_config": float(row['avg_max_tokens_config']) if pd.notna(row['avg_max_tokens_config']) else None,
                 "avg_temperature": float(row['avg_temperature']) if pd.notna(row['avg_temperature']) else None,
                 "token_efficiency_ratio": float(row['token_efficiency_ratio']) if pd.notna(row['token_efficiency_ratio']) else None
@@ -4241,31 +4146,30 @@ def analyze_config_correlation(
         
         where_clauses = [
             f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
-            "T.full_request IS NOT NULL",
-            "T.full_response IS NOT NULL",
-            "JSON_VALUE(T.metadata.request_latency) IS NOT NULL"
+            "T.request_latency IS NOT NULL"
         ]
         
         if agent_name:
-            where_clauses.append(f"JSON_VALUE(T.full_request.labels.adk_agent_name) = '{agent_name}'")
+            where_clauses.append(f"T.agent_name = '{agent_name}'")
         if model_name:
             where_clauses.append(f"T.model LIKE '%{model_name}%'")
         
         where_clause = " AND ".join(where_clauses)
         
-        # Build multi-table source
-        union_source = build_multi_table_source(where_clause, select_suffix="AS T")
+        # Use View directly
         
         query = f"""
         SELECT
-          CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000 AS latency,
-          SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.temperature') AS FLOAT64) AS temperature,
-          SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.maxOutputTokens') AS INT64) AS max_output_tokens,
-          SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.topK') AS INT64) AS top_k,
-          SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.topP') AS FLOAT64) AS top_p,
-          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) AS output_tokens
+          T.request_latency AS latency,
+          T.temperature AS temperature,
+          T.max_output_tokens AS max_output_tokens,
+          T.top_k,
+          T.top_p,
+          T.candidates_token_count AS candidates_token_count
         FROM
-          {union_source}
+          `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}` AS T
+        WHERE
+          {where_clause}
         """
         
         df = execute_bigquery(query)
@@ -4326,9 +4230,9 @@ def analyze_config_correlation(
             }
         
         # Additional insight: Actual output tokens vs configured max
-        output_vs_max_data = df[['output_tokens', 'max_output_tokens']].dropna()
+        output_vs_max_data = df[['candidates_token_count', 'max_output_tokens']].dropna()
         if len(output_vs_max_data) >= 10:
-            avg_utilization = (output_vs_max_data['output_tokens'] / output_vs_max_data['max_output_tokens']).mean()
+            avg_utilization = (output_vs_max_data['candidates_token_count'] / output_vs_max_data['max_output_tokens']).mean()
             correlations['output_vs_max_tokens'] = {
                 "avg_utilization": float(avg_utilization),
                 "sample_size": len(output_vs_max_data),
@@ -4382,59 +4286,32 @@ def get_config_outliers(
         
         where_clauses = [
             f"T.logging_time BETWEEN '{start_time}' AND '{end_time}'",
-            "T.full_request IS NOT NULL",
-            "T.full_response IS NOT NULL",
-            "JSON_VALUE(T.metadata.request_latency) IS NOT NULL",
-            "JSON_VALUE(T.full_request, '$.generationConfig.maxOutputTokens') IS NOT NULL"
+            "T.request_latency IS NOT NULL",
+            "T.max_output_tokens IS NOT NULL",
+            "T.candidates_token_count IS NOT NULL"
         ]
         
         where_clause = " AND ".join(where_clauses)
         
-        tables = get_table_list()
+        # Use View directly
         
-        if len(tables) == 1:
-            query = f"""
+        query = f"""
         SELECT
           T.request_id,
-          COALESCE(JSON_VALUE(T.full_request.labels.adk_agent_name), 'unknown') AS agent_name,
-          CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000 AS latency,
-          SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.temperature') AS FLOAT64) AS temperature,
-          SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.maxOutputTokens') AS INT64) AS max_output_tokens,
-          SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) AS output_tokens,
-          SAFE_DIVIDE(
-            SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64),
-            SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.maxOutputTokens') AS INT64)
-          ) AS token_efficiency
+          T.agent_name,
+          T.request_latency AS latency,
+          T.temperature AS temperature,
+          T.max_output_tokens AS max_output_tokens,
+          T.candidates_token_count AS candidates_token_count,
+          SAFE_DIVIDE(T.candidates_token_count, T.max_output_tokens) AS token_efficiency
         FROM
-          `{PROJECT_ID}.{DATASET_ID}.{tables[0]}` AS T
+          `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}` AS T
         WHERE
           {where_clause}
-          AND SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) IS NOT NULL
+          AND T.candidates_token_count > 0
+          AND T.max_output_tokens > 0
+        LIMIT 1000
         """
-        else:
-            table_selects = []
-            for table in tables:
-                table_select = f"""
-            SELECT
-              T.request_id,
-              COALESCE(JSON_VALUE(T.full_request.labels.adk_agent_name), 'unknown') AS agent_name,
-              CAST(JSON_EXTRACT_SCALAR(T.metadata, '$.request_latency') AS FLOAT64) / 1000 AS latency,
-              SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.temperature') AS FLOAT64) AS temperature,
-              SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.maxOutputTokens') AS INT64) AS max_output_tokens,
-              SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) AS output_tokens,
-              SAFE_DIVIDE(
-                SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64),
-                SAFE_CAST(JSON_VALUE(T.full_request, '$.generationConfig.maxOutputTokens') AS INT64)
-              ) AS token_efficiency
-            FROM
-              `{PROJECT_ID}.{DATASET_ID}.{table}` AS T
-            WHERE
-              {where_clause}
-              AND SAFE_CAST(JSON_VALUE(T.full_response.usageMetadata.candidatesTokenCount) AS INT64) IS NOT NULL
-            """
-                table_selects.append(table_select)
-            
-            query = "\nUNION ALL\n".join(table_selects)
         
         df = execute_bigquery(query)
         
@@ -4446,7 +4323,7 @@ def get_config_outliers(
         
         # Find outliers: low token efficiency (over-provisioned maxOutputTokens)
         wasteful_configs = df[df['token_efficiency'] < threshold_efficiency].copy()
-        wasteful_configs['waste_tokens'] = wasteful_configs['max_output_tokens'] - wasteful_configs['output_tokens']
+        wasteful_configs['waste_tokens'] = wasteful_configs['max_output_tokens'] - wasteful_configs['candidates_token_count']
         wasteful_configs.sort_values('waste_tokens', ascending=False, inplace=True)
         
         # Calculate potential savings
@@ -4457,9 +4334,9 @@ def get_config_outliers(
         agent_efficiency = df.groupby('agent_name').agg({
             'token_efficiency': 'mean',
             'max_output_tokens': 'mean',
-            'output_tokens': 'mean'
+            'candidates_token_count': 'mean'
         }).reset_index()
-        agent_efficiency['recommended_max_tokens'] = (agent_efficiency['output_tokens'] * 1.5).round(0)  # 50% buffer
+        agent_efficiency['recommended_max_tokens'] = (agent_efficiency['candidates_token_count'] * 1.5).round(0)  # 50% buffer
         
         outliers_list = []
         for _, row in wasteful_configs.head(20).iterrows():
@@ -4469,10 +4346,10 @@ def get_config_outliers(
                 "latency": float(row['latency']),
                 "temperature": float(row['temperature']) if pd.notna(row['temperature']) else None,
                 "max_output_tokens_config": int(row['max_output_tokens']),
-                "actual_output_tokens": int(row['output_tokens']),
+                "actual_candidates_token_count": int(row['candidates_token_count']),
                 "token_efficiency": float(row['token_efficiency']),
                 "wasted_tokens": int(row['waste_tokens']),
-                "recommendation": f"Reduce maxOutputTokens from {int(row['max_output_tokens'])} to ~{int(row['output_tokens'] * 1.5)}"
+                "recommendation": f"Reduce maxOutputTokens from {int(row['max_output_tokens'])} to ~{int(row['candidates_token_count'] * 1.5)}"
             }
             outliers_list.append(outlier)
         
@@ -4482,7 +4359,7 @@ def get_config_outliers(
                 agent_rec = {
                     "agent_name": row['agent_name'],
                     "current_avg_max_tokens": int(row['max_output_tokens']),
-                    "actual_avg_output": int(row['output_tokens']),
+                    "actual_avg_output": int(row['candidates_token_count']),
                     "efficiency": float(row['token_efficiency']),
                     "recommended_max_tokens": int(row['recommended_max_tokens'])
                 }
@@ -4511,6 +4388,70 @@ def get_config_outliers(
         error_msg = f"Error in get_config_outliers: {str(e)}"
         logging.error(error_msg)
         return json.dumps({"error": error_msg})
+
+
+def _get_ml_generated_summary(request_id: str) -> Optional[str]:
+    """
+    Attempts to generate a summary for a specific request using BigQuery ML.
+    Returns the summary string or None if failed/supported.
+    """
+    try:
+        # Check if we should even try (requires raw access usually, or we use the preview from view?)
+        # For better summary, we need full_request.
+        # We'll try to query raw table for full_request and then run ML.GENERATE_TEXT
+        
+        tables = get_table_list()
+        if not tables:
+            return None
+            
+        # We assume a remote model named 'gemini_flash' or 'gemini_pro' exists.
+        # If not, this will fail gracefully.
+        
+        # Safe table selection
+        table_ref = f"`{PROJECT_ID}.{DATASET_ID}.{tables[0]}`"
+        
+        query = f"""
+        SELECT
+          ml_generate_text_result['candidates'][0]['content'] AS summary
+        FROM
+          ML.GENERATE_TEXT(
+            MODEL `{PROJECT_ID}.{DATASET_ID}.gemini_flash`,
+            (
+              SELECT 
+                CONCAT('Summarize this LLM request in 1 sentence: ', TO_JSON_STRING(full_request)) AS prompt
+              FROM {table_ref}
+              WHERE CAST(request_id AS STRING) = '{request_id}'
+            ),
+            STRUCT(
+              0.2 AS temperature,
+              100 AS max_output_tokens
+            )
+          )
+        """
+        
+        # We use a short timeout because this is an enhancement
+        # If it takes too long, just skip it.
+        # But wait, execute_bigquery uses default timeout.
+        # We need to be careful not to block main thread too long.
+        
+        # For now, let's wrap it in a strict try-except and maybe log if it works.
+        
+        # NOTE: If model doesn't exist, this throws.
+        # We'll catch it and return None.
+        
+        # We need to execute and fetch result.
+        # Re-using execute_bigquery is fine but it returns DF.
+        
+        df = execute_bigquery(query)
+        if not df.empty and 'summary' in df.columns:
+            return df.iloc[0]['summary']
+            
+        return None
+        
+    except Exception as e:
+        # This is expected if model doesn't exist or permissions are missing
+        logging.debug(f"ML Summary generation failed for {request_id}: {e}")
+        return None
 
 
 

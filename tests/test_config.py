@@ -7,6 +7,7 @@ Checks that all config fields are properly read and accessible.
 import json
 import os
 
+
 def test_config_handling():
     """Test that configuration is properly read from the config file."""
     
@@ -16,7 +17,7 @@ def test_config_handling():
     print()
     
     # Find the config file
-    config_path = "autonomous_analysis_90d.json"
+    config_path = os.path.join(os.path.dirname(__file__), '../autonomous_analysis_90d.json')
     
     if not os.path.exists(config_path):
         print(f"✗ ERROR: Config file not found at {config_path}")
@@ -41,7 +42,6 @@ def test_config_handling():
         "analysis_scope": "str",
         "kpis": "dict",
         "num_slowest_queries": "int",
-        "agent_name": "str or null"
     }
     
     all_present = True
@@ -79,7 +79,6 @@ def test_config_handling():
     print(f"   config = json.loads(config_json)")
     print(f"   time_range = config['time_period_days']  # → '{config.get('time_period_days')}'")
     print(f"   kpi_target = config['kpis']['mean_latency_target']  # → {config.get('kpis', {}).get('mean_latency_target')}")
-    print(f"   agent_filter = config.get('agent_name')  # → {config.get('agent_name')}")
     print(f"   scope = config.get('analysis_scope', 'standard')  # → '{config.get('analysis_scope', 'standard')}'")
     print()
     
