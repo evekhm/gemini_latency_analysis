@@ -24,7 +24,8 @@ echo -e "${BLUE}========================================${NC}"
 echo ""
 
 # Pre-flight checks
-REPLAY_FILE="autonomous_analysis_90d.json"
+# Check for argument, default to autonomous_analysis_90d.json
+REPLAY_FILE="${1:-autonomous_analysis_90d.json}"
 
 # Check if .env file exists
 if [ -f "${SCRIPT_DIR}/.env" ]; then
@@ -50,6 +51,7 @@ if [ ! -f "${SCRIPT_DIR}/$REPLAY_FILE" ]; then
     exit 1
 fi
 echo -e "${GREEN}✓ Using replay file: $REPLAY_FILE${NC}"
+export LATENCY_ANALYSIS_CONFIG_FILE="${SCRIPT_DIR}/$REPLAY_FILE"
 
 # Check if virtual environment exists
 if [ ! -d "${SCRIPT_DIR}/.venv" ]; then

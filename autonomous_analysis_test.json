@@ -1,0 +1,25 @@
+{
+    "state": {},
+    "config": {
+        "analysis_scope": "autonomous",
+        "agent_name": null,
+        "kpis": {
+            "mean_latency_target": 120.0,
+            "p95_latency_target": 200.0,
+            "per_agent": {
+                "thinking_heavy": {
+                    "mean_latency_target": 120.0,
+                    "p95_latency_target": 200.0
+                }
+            }
+        },
+        "num_slowest_queries": 20,
+        "filters": {
+          "agents_included": "thinking_heavy",
+          "agents_excluded": ""
+        }
+    },
+    "queries": [
+        "Perform autonomous latency analysis with automatic deep research triggers for the configured time period."
+    ]
+}
