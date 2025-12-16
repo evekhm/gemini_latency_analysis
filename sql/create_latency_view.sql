@@ -24,7 +24,7 @@ SELECT
   SAFE_CAST(JSON_VALUE(full_request.generationConfig.temperature) AS FLOAT64) AS temperature,
   SAFE_CAST(JSON_VALUE(full_request.generationConfig.topK) AS INT64) AS top_k,
   SAFE_CAST(JSON_VALUE(full_request.generationConfig.topP) AS FLOAT64) AS top_p,
-  JSON_VALUE(otel_log.traceId) AS trace_id,
+  JSON_VALUE(full_request.labels.trace_id) AS trace_id,
   -- Generate preview from clean contents to avoid thoughtSignature
   SUBSTR(TO_JSON_STRING(clean_contents), 1, 1000) AS request_preview,
   clean_contents AS request_contents,

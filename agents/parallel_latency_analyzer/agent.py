@@ -84,13 +84,14 @@ load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "../../.env"))
 cloud_logging_client = google.cloud.logging.Client()
 cloud_logging_client.setup_logging()
 
-from google.adk.models.google_llm import Gemini
+from .tracing_model import TracingGemini
+
 
 MODEL_ID = os.getenv('AGENT_MODEL_ID') or os.getenv('MODEL')
 assert MODEL_ID, "MODEL_ID is not set"
 
 
-MODEL = Gemini(
+MODEL = TracingGemini(
     model=MODEL_ID,
     retry_options=types.HttpRetryOptions(
         initial_delay=1.0,
