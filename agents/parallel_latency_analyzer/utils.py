@@ -261,7 +261,7 @@ def parse_time_range(time_range: str) -> str:
 
     time_range = time_range.strip().lower()
     
-    if time_range == 'all':
+    if not time_range or time_range == 'all'or time_range == '':
         start = datetime(2000, 1, 1)
         end = now
         return json.dumps({"start_date": start.strftime('%Y-%m-%d %H:%M:%S'), "end_date": end.strftime('%Y-%m-%d %H:%M:%S')})
@@ -356,8 +356,8 @@ def parse_time_range(time_range: str) -> str:
                  pass
             
     except Exception as e:
-        logging.warning(f"Error parsing time range '{time_range}': {e}. Defaulting to 24h.")
-        start = now - timedelta(hours=24)
+        logging.warning(f"Error parsing time range '{time_range}': {e}. Defaulting to all.")
+        start = datetime(2000, 1, 1)
         end = now
     
     return json.dumps({"start_date": start.strftime('%Y-%m-%d %H:%M:%S'), "end_date": end.strftime('%Y-%m-%d %H:%M:%S')})
@@ -588,7 +588,7 @@ def get_tool_usage_report() -> str:
 
 @trace_span()
 def get_subagent_tool_usage(
-    time_range: str = "24h",
+    time_range: str = "all",
     agent_name: Optional[str] = None
 ) -> str:
     """
@@ -693,7 +693,7 @@ def build_multi_table_source(where_clause: str, select_suffix: str = "") -> str:
 
 @trace_span()
 def get_overall_statistics(
-    time_range: str = "24h",
+    time_range: str = "all",
     model_name: Optional[str] = None,
     agent_name: Optional[str] = None
 ) -> str:
@@ -863,7 +863,7 @@ def get_trace_details(trace_id: str) -> str:
 
 @trace_span()
 def get_latency_distribution(
-    time_range: str = "24h",
+    time_range: str = "all",
     model_name: Optional[str] = None,
     agent_name: Optional[str] = None
 ) -> str:
@@ -967,7 +967,7 @@ def get_latency_distribution(
 
 @trace_span()
 def get_hourly_patterns(
-    time_range: str = "24h",
+    time_range: str = "all",
     model_name: Optional[str] = None,
     agent_name: Optional[str] = None
 ) -> str:
@@ -1086,7 +1086,7 @@ def get_hourly_patterns(
 
 @trace_span()
 def get_hourly_model_distribution(
-    time_range: str = "24h",
+    time_range: str = "all",
     agent_name: Optional[str] = None
 ) -> str:
     """
@@ -1184,7 +1184,7 @@ def get_hourly_model_distribution(
 
 @trace_span()
 def get_hourly_model_latency_heatmap(
-    time_range: str = "24h",
+    time_range: str = "all",
     agent_name: Optional[str] = None
 ) -> str:
     """
@@ -1280,7 +1280,7 @@ def get_hourly_model_latency_heatmap(
 
 @trace_span()
 def get_agent_comparison(
-    time_range: str = "24h",
+    time_range: str = "all",
     model_name: Optional[str] = None
 ) -> str:
     """
@@ -1413,7 +1413,7 @@ def get_agent_comparison(
 
 @trace_span()
 def get_model_comparison(
-    time_range: str = "24h",
+    time_range: str = "all",
     agent_name: Optional[str] = None
 ) -> str:
     """
@@ -1713,7 +1713,7 @@ def get_agent_model_matrix(
 
 @trace_span()
 def get_token_correlation(
-    time_range: str = "24h",
+    time_range: str = "all",
     model_name: Optional[str] = None,
     agent_name: Optional[str] = None
 ) -> str:
@@ -1809,7 +1809,7 @@ def get_token_correlation(
 
 @trace_span()
 def get_outlier_analysis(
-    time_range: str = "24h",
+    time_range: str = "all",
     model_name: Optional[str] = None,
     agent_name: Optional[str] = None,
     threshold_std: float = 3.0
@@ -1913,7 +1913,7 @@ def get_outlier_analysis(
 @trace_span()
 def get_slowest_queries(
     num_queries: int = 20,
-    time_range: str = "24h",
+    time_range: str = "all",
     model_name: Optional[str] = None,
     agent_name: Optional[str] = None
 ) -> str:
@@ -2080,7 +2080,7 @@ def get_query_details(request_id: str) -> str:
 
 @trace_span()
 def get_concurrent_request_impact(
-    time_range: str = "24h",
+    time_range: str = "all",
     model_name: Optional[str] = None,
     bucket_size: int = 300
 ) -> str:
@@ -2272,7 +2272,7 @@ def detect_performance_degradation(
 
 @trace_span()
 def get_cost_analysis(
-    time_range: str = "24h",
+    time_range: str = "all",
     model_name: Optional[str] = None,
     agent_name: Optional[str] = None
 ) -> str:
@@ -2472,7 +2472,7 @@ def compare_time_periods(
 @trace_span()
 def cluster_slow_queries(
     num_queries: int = 50,
-    time_range: str = "24h",
+    time_range: str = "all",
     model_name: Optional[str] = None,
     agent_name: Optional[str] = None
 ) -> str:
@@ -2648,7 +2648,7 @@ def cluster_slow_queries(
 
 @trace_span()
 def analyze_correlation_detailed(
-    time_range: str = "24h",
+    time_range: str = "all",
     model_name: Optional[str] = None,
     agent_name: Optional[str] = None
 ) -> str:
@@ -2941,7 +2941,7 @@ def fetch_single_query(request_id: str) -> str:
 @trace_span()
 def fetch_slow_queries_batch(
     num_queries: int = 20,
-    time_range: str = "24h",
+    time_range: str = "all",
     model_name: Optional[str] = None,
     agent_name: Optional[str] = None
 ) -> str:
@@ -2959,7 +2959,7 @@ def fetch_slow_queries_batch(
     
     Args:
         num_queries: Number of slowest queries to fetch (default: 20)
-        time_range: Time range to search (default: "24h")
+        time_range: Time range to search (default: "all")
         model_name: Optional model name filter
         agent_name: Optional agent name filter
         
@@ -3086,7 +3086,7 @@ def fetch_slow_queries_batch(
 @trace_span()
 def fetch_fastest_queries(
     num_queries: int = 20,
-    time_range: str = "24h",
+    time_range: str = "all",
     model_name: Optional[str] = None,
     agent_name: Optional[str] = None
 ) -> str:
@@ -3098,7 +3098,7 @@ def fetch_fastest_queries(
     
     Args:
         num_queries: Number of fastest queries to fetch (default: 20)
-        time_range: Time range to search (default: "24h")
+        time_range: Time range to search (default: "all")
         model_name: Optional model name filter
         
     Returns:
@@ -3314,7 +3314,7 @@ def get_token_velocity(
 
 @trace_span()
 def analyze_request_queuing(
-    time_range: str = "24h",
+    time_range: str = "all",
     model_name: Optional[str] = None,
     agent_name: Optional[str] = None,
     burst_window_seconds: int = 1
@@ -3424,7 +3424,7 @@ def check_kpi_compliance(
     Check if current performance meets defined KPIs.
     
     Args:
-        time_range: Time range to analyze (defaults to config or "24h")
+        time_range: Time range to analyze (defaults to config or "all")
         mean_latency_target: Target for mean latency (defaults to config or 3.0)
         p95_latency_target: Target for P95 latency (defaults to config or 5.0)
         agent_name: Filter by specific agent (defaults to config or None)
@@ -3662,25 +3662,37 @@ def save_analysis_report(
 
 
 @trace_span()
+@trace_span()
 def _load_config_data() -> dict:
     """
     Internal helper to read and cache configuration.
     Returns the parsed JSON dict (or empty dict on error).
     """
     try:
-        # Assuming the config file is in the parent directory of agents/latency_analyzer
-        # agents/latency_analyzer/utils.py -> ../../autonomous_analysis_90d.json
-        
         # Check environment variable first
         config_path = os.getenv("LATENCY_ANALYSIS_CONFIG_FILE")
         
+        # If not set, try default relative path
         if not config_path:
              # Default path relative to this file
-             config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "autonomous_analysis_90d.json")
-             
-             if not os.path.exists(config_path):
-                  # Fallback to current directory or relative path if running from root
-                  config_path = "autonomous_analysis_90d.json"
+             # /agents/parallel_latency_analyzer/utils.py -> ... -> ... -> autonomous_analysis_90d.json
+             base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+             config_path = os.path.join(base_dir, "autonomous_analysis_90d.json")
+             logging.info(f"Config env var not set, using default path: {config_path}")
+        else:
+             logging.info(f"Using config from env var LATENCY_ANALYSIS_CONFIG_FILE: {config_path}")
+
+        # Resolve absolute path if it is relative
+        if not os.path.isabs(config_path):
+            # Try relative to CWD first
+            if os.path.exists(config_path):
+                config_path = os.path.abspath(config_path)
+            else:
+                # Try relative to project root (assumption: 3 dirs up from here)
+                base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+                candidate = os.path.join(base_dir, config_path)
+                if os.path.exists(candidate):
+                    config_path = candidate
              
         if not os.path.exists(config_path):
             logging.warning(f"Config file not found at {config_path}")
@@ -3688,8 +3700,10 @@ def _load_config_data() -> dict:
 
         with open(config_path, 'r') as f:
             data = json.load(f)
+            logging.info(f"Successfully loaded config from {config_path}. Keys: {list(data.keys())}")
             # Return only the config section if it exists, otherwise the whole file
             return data.get("config", data)
+            
     except Exception as e:
         logging.error(f"Error reading config: {str(e)}")
         return {}
@@ -3750,7 +3764,13 @@ def get_analysis_config() -> str:
         logging.info("=" * 80)
         logging.info("ANALYSIS CONFIGURATION")
         logging.info("=" * 80)
-        logging.info(f"Time Period: {config.get('time_period_days', 'NOT SET')}")
+        
+        time_period = config.get('time_period_days', 'all')
+        if time_period == 'NOT SET':
+            # This shouldn't happen with get(..., 'all') but keeping for safety if logic changes
+            time_period = 'all'
+            
+        logging.info(f"Time Period: {time_period} (default)")
         logging.info(f"Analysis Scope: {config.get('analysis_scope', 'NOT SET')}")
         logging.info(f"Target Mean Latency: {config.get('kpis', {}).get('mean_latency_target', 'NOT SET')}s")
         logging.info(f"Target P95 Latency: {config.get('kpis', {}).get('p95_latency_target', 'NOT SET')}s")
@@ -3768,7 +3788,7 @@ def get_analysis_config() -> str:
 
 @trace_span()
 def analyze_thinking_overhead(
-    time_range: str = "24h",
+    time_range: str = "all",
     model_name: Optional[str] = None,
     agent_name: Optional[str] = None
 ) -> str:
@@ -3873,7 +3893,7 @@ def analyze_thinking_overhead(
 
 @trace_span()
 def detect_compute_inefficiency(
-    time_range: str = "24h",
+    time_range: str = "all",
     model_name: Optional[str] = None,
     agent_name: Optional[str] = None
 ) -> str:
@@ -3966,7 +3986,7 @@ def detect_compute_inefficiency(
 
 @trace_span()
 def get_generation_config_comparison(
-    time_range: str = "24h",
+    time_range: str = "all",
     agent_name: Optional[str] = None,
     model_name: Optional[str] = None
 ) -> str:
@@ -3977,7 +3997,7 @@ def get_generation_config_comparison(
     configurations lead to better or worse latency performance.
     
     Args:
-        time_range: Time range to analyze (default: "24h")
+        time_range: Time range to analyze (default: "all")
         agent_name: Filter by specific agent (optional)
         model_name: Filter by specific model (optional)
         
@@ -4115,7 +4135,7 @@ def get_generation_config_comparison(
 
 @trace_span()
 def analyze_config_correlation(
-    time_range: str = "24h",
+    time_range: str = "all",
     agent_name: Optional[str] = None,
     model_name: Optional[str] = None
 ) -> str:
@@ -4129,7 +4149,7 @@ def analyze_config_correlation(
     - topP vs latency (if available)
     
     Args:
-        time_range: Time range to analyze (default: "24h")
+        time_range: Time range to analyze (default: "all")
         agent_name: Filter by specific agent (optional)
         model_name: Filter by specific model (optional)
         
@@ -4258,7 +4278,7 @@ def analyze_config_correlation(
 
 @trace_span()
 def get_config_outliers(
-    time_range: str = "24h",
+    time_range: str = "all",
     threshold_efficiency: float = 0.3
 ) -> str:
     """
@@ -4270,7 +4290,7 @@ def get_config_outliers(
     - Over-provisioned configurations
     
     Args:
-        time_range: Time range to analyze (default: "24h")
+        time_range: Time range to analyze (default: "all")
         threshold_efficiency: Efficiency threshold (output/max_output) below which to flag (default: 0.3)
         
     Returns:
@@ -4523,7 +4543,7 @@ get_request_details = get_query_details
 
 @trace_span()
 def get_daily_patterns(
-    time_range: str = "24h",
+    time_range: str = "all",
     model_name: Optional[str] = None,
     agent_name: Optional[str] = None
 ) -> str:
