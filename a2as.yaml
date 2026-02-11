@@ -1,0 +1,1935 @@
+manifest:
+  version: "0.1.3"
+  schema: https://a2as.org/cert/schema
+  subject:
+    name: evekhm/gemini_latency_analysis
+    source: https://github.com/evekhm/gemini_latency_analysis
+    branch: main
+    commit: "fc65c0ab"
+    scope: [agents/latency_analyzer/__init__.py, agents/latency_analyzer/agent.py, agents/latency_analyzer/prompts.py, agents/latency_analyzer/utils.py,
+      agents/parallel_latency_analyzer/agent.py, agents/parallel_latency_analyzer/prompts.py, agents/parallel_latency_analyzer/utils.py,
+      gemini_logs.py, load_generator.py, run_with_caching.py]
+  issued:
+    by: A2AS.org
+    at: '2026-02-11T16:55:33Z'
+    url: https://a2as.org/certified/agents/evekhm/gemini_latency_analysis
+  signatures:
+    digest: sha256:-JoNITpzoXod3d4BcLyJhBCZIQpyuxiWHgO-WGKNw-s
+    key: ed25519:gXRh4btvpw28HrJsuAWWlYOnZIDzd2N0S2Wvmi9oIow
+    sig: ed25519:pXJrhFLW45w7yDc7Hb8VHaDNtE_as_omUzWXuUyIShEZj4gKJ4OC6POGxY2bOT1b93Xi9wKO-YEu80ungCwyDw
+
+agents:
+  agent:
+    type: instance
+    models: [model]
+    params:
+      name: name
+      description: A simple load generator agent for latency analysis.
+      instruction: [You are a helpful assistant. Respond to the user's prompt directly.]
+      generate_content_config:
+        class: GenerateContentConfig
+      function: create_load_generator_agent
+  agent.build_dimension_team:
+    type: factory
+    params:
+      name: TEAM_{safe_name}
+      function: build_dimension_team
+      sub_agents: [primer, strategist, loop, writer]
+  complete_report_generator:
+    type: instance
+    params:
+      name: complete_report_generator
+      description: 'PARALLEL EXECUTION: Launches all analysis teams at once, then assembles the final report.'
+      sub_agents: [investigation_swarm, final_report_assembler]
+  critique:
+    type: instance
+    models: [MODEL_ID]
+    tools: [get_analysis_metadata]
+    params:
+      name: critique_{safe_name}
+      description: Hostile reviewer of findings
+      instruction: ''
+      output_schema: InvestigationFeedback
+      disallow_transfer_to_parent: "True"
+      disallow_transfer_to_peers: "True"
+      output_key: '{...}_FEEDBACK'
+      function: build_dimension_team
+  escalator:
+    type: instance
+    models: [gemini-2.5-flash]
+    params:
+      name: escalator_{safe_name}
+      feedback_key: '{...}_FEEDBACK'
+      function: build_dimension_team
+  final_report_assembler:
+    type: instance
+    models: [MODEL_ID]
+    tools: [get_analysis_metadata, get_tool_usage_report]
+    params:
+      name: final_report_assembler
+      description: Combines all individual report sections into the final master document.
+      instruction: [You are the Final Report Assembler., Your input is a collection of Markdown sections from various analysis
+          teams., '**Your Goal:**', Stitch them together into a cohesive "Autonomous Latency Analysis Report" following the
+          **Gold Standard Structure**., '**CRITICAL FIRST STEP:**', 'Call `get_analysis_metadata()` to get actual environment
+          values (project_id, dataset, tables, version, timestamp).', Call `get_tool_usage_report()` to retrieve system performance
+          metrics., Call `get_subagent_tool_usage()` to retrieve granular subagent activity., '**DO NOT** make up or hallucinate
+          these values.', '**MANDATORY METADATA HEADER:**', 'ALL reports MUST start with this exact metadata header structure:',
+        '# Autonomous Latency Analysis Report', '**Analysis Metadata:**', '- **Time Range**: [e.g., "Last 90 days" or specific
+          date range]', '- **Model**: [Model name if filtered, or "All models"]', '- **Agent**: [CRITICAL: Check `get_analysis_metadata().agents_included`.
+          IF it is not empty, you MUST list them exactly (e.g., "latency_analyzer, final_report_assembler"). Else if `agents_excluded`
+          is not empty, say ''All except [excluded]''. Else ''All agents'']', '- **Project ID**: [from get_analysis_metadata().project_id]',
+        '- **Dataset**: [from get_analysis_metadata().dataset]', '- **Tables**: [from get_analysis_metadata().tables - list
+          all tables]', '- **Analyzer Version**: [from get_analysis_metadata().analyzer_version]', '- **Generated**: [from
+          get_analysis_metadata().generated_timestamp]', '---', '```', '**Mandatory Gold Standard Table of Contents:**', 1.  **Title**
+          with metadata header (see above), '2.  **Executive Summary**: High-level synthesis of key findings and primary recommendation',
+        '3.  **Analysis Depth Indicator**:', '- List which deep research triggers activated (if any)', '- Explain why deeper
+          investigation was performed', '4.  **Key Metrics**: Summary table (total requests, mean/P95 latency, cost)', '5.  **KPI
+          Compliance**:', '-   **Overall KPI Status** (Mean, P95 vs Targets with Pass/Fail)', '-   **KPI Compliance Per Agent**
+          (MUST define Pass/Fail for every agent)', '- Table format: | Agent Name | Mean Latency (s) | Target (s) | Status
+          | P95 Latency (s) | Target (s) | Status | Overall |', '- Sort ALPHABETICALLY by Agent Name', '- Use 🟢 PASS / 🔴 FAIL
+          emojis', '-   **KPI Compliance Per Model** (if multiple models detected)', '- Table format: | Model Name | Mean
+          Latency (s) | Target (s) | Status | P95 Latency (s) | Target (s) | Status | Overall |', '6.  **Hypothesis Testing
+          Results**:', '-   List H1-H10 with ✅ (Accepted) or ❌ (Rejected)', '-   **MANDATORY:** You MUST include a brief "Evidence"
+          clause for EACH hypothesis explaining WHY.', '-   *Format*: `H# [Name]: [Status] - [Key Evidence/Metric]`', '-   *Example*:
+          "H1: Token Size Drives Latency: ✅ Accepted - Strong positive correlation (r=0.97) observed between total tokens
+          and latency."', '-   *Example*: "H6: Request Queuing: ❌ Rejected - No burst pattern detected; arrival rates are
+          consistent."', '7.  **Detailed Findings** (The Sections from dimension teams):', '-   "KPI Compliance & Overall
+          Statistics"', '-   "Token Usage and Correlation"', '-   "Model & Agent Performance Comparison" (MUST include the
+          **Per-Agent Model Matrix**)', '-   "Slowest Queries Analysis" (MUST include the **Top 20 Table**)', '-   "Hourly
+          & Daily Patterns"', '-   "Micro-Burst & Queuing Analysis"', '-   "Cost & Efficiency Analysis" (CRITICAL for H8/H10
+          - must include GenerationConfig analysis)', '8.  **Root Causes**: Summary of why latency issues exist (synthesized
+          from all sections)', '9.  **Recommendations**: Model-specific, agent-specific ACTIONABLE advice', '- Prioritize:
+          High/Medium/Low priority', '- Include specific implementation steps', '- Provide expected impact estimates where
+          possible', '10. **Tool Execution Stats**:', '-   Table of tool usage from `get_tool_usage_report()`', '-   Columns:
+          Tool Name, Description, Calls, Avg Time (s), Total Time (s)', '-   Sort by Total Time Descending', '11. **Subagent
+          Tool Activity**:', '-   Call `get_subagent_tool_usage()` (pass the configured time range).', '-   Create a table:
+          **"Tool Usage By Subagent"**', '-   Columns: Agent Name, Tool Name, Count', '-   Sort ALPHABETICALLY by Agent Name,
+          then by Count (Descending)', '-   **MANDATORY**: Group by Agent.', '**CRITICAL SECTION REQUIREMENTS:**', '- **Model
+          Comparison Section** (MANDATORY if multiple models detected):', '- Must call `get_model_comparison()` and `get_agent_model_matrix()`
+          if not already in sections', '- Create comprehensive model comparison table: | Model | Total Calls | Avg Latency
+          | P95 | Avg TPOT | Efficiency |', '- Highlight fastest vs slowest models', '- Note which agents use which models',
+        '- Identify model switching patterns if detected', '- **GenerationConfig Analysis** (ALWAYS INCLUDE):', '- Must call
+          `get_generation_config_comparison()`, `analyze_config_correlation()`, `get_config_outliers()` if not in sections',
+        '- Create config performance table: | Temperature | MaxTokens | Avg Latency | P95 | Token Efficiency |', '- Highlight
+          best/worst performing config combinations', '- Show correlation strength between config params and latency', '-
+          List wasteful configs with optimization recommendations', '- Provide per-agent optimal config recommendations',
+        '- **Slowest Queries Table** (MANDATORY):', '- Must include query examples (first 100 chars of actual query text)',
+        '- Format: | Rank | Request ID | Latency (s) | Agent Name | Input Tokens | Output Tokens | Total Tokens |', '- Sort
+          by latency descending', '**Critical Rules:**', '-   **Do NOT skip the "Per-Agent Model Usage and Performance Matrix"**.
+          If it''s missing in the sections, add a placeholder "[ERROR: Matrix Missing]".', '-   **Do NOT skip the "Hypothesis
+          Testing Results"**. You must construct it from the findings in the sections.', '-   **Do NOT skip the "Slowest Queries
+          Table"**. This is mandatory for traceability.', '-   **Do NOT hallucinate new data**. Only use what is in the sections
+          or from calling the metadata tool.', '-   **DO call `get_analysis_metadata()` first** to get real values for the
+          header.', '-   **DO call `get_tool_usage_report()`** to populate the stats section.', '-   **DO call `get_subagent_tool_usage()`**
+          to populate the subagent activity section.']
+      generate_content_config:
+        ref: CONTENT_CONFIG
+      output_key: FINAL_REPORT_MARKDOWN
+  investigation_swarm:
+    type: instance
+    params:
+      name: investigation_swarm
+  investigator:
+    type: instance
+    models: [MODEL_ID]
+    tools: [get_overall_statistics, get_latency_distribution, get_hourly_patterns, get_daily_patterns, get_agent_comparison,
+      get_model_comparison, get_agent_model_matrix, get_token_correlation, analyze_correlation_detailed, get_outlier_analysis,
+      get_slowest_queries, cluster_slow_queries, get_concurrent_request_impact, detect_performance_degradation, get_cost_analysis,
+      compare_time_periods, get_query_details, get_request_details, fetch_slow_queries, fetch_single_query, fetch_slow_queries_batch,
+      fetch_fastest_queries, get_token_velocity, analyze_request_queuing, check_kpi_compliance, analyze_thinking_overhead,
+      detect_compute_inefficiency, get_generation_config_comparison, analyze_config_correlation, get_config_outliers, get_hourly_model_distribution,
+      get_hourly_model_latency_heatmap, get_analysis_config, get_analysis_config, get_analysis_metadata, verify_data_access,
+      save_analysis_report, get_subagent_tool_usage]
+    params:
+      name: investigator_{safe_name}
+      description: Executes tools to gather data
+      instruction: investigator_instruction
+      generate_content_config:
+        ref: CONTENT_CONFIG
+      output_key: '{...}_DOC_OUTPUT'
+      after_model_callback: accumulate_investigator_output
+      function: build_dimension_team
+  latency_analyzer:
+    type: instance
+    models: [MODEL_ID]
+    tools: [get_overall_statistics, get_latency_distribution, get_hourly_patterns, get_agent_comparison, get_model_comparison,
+      get_agent_model_matrix, get_token_correlation, analyze_correlation_detailed, get_outlier_analysis, get_slowest_queries,
+      get_query_details, cluster_slow_queries, get_concurrent_request_impact, detect_performance_degradation, get_cost_analysis,
+      compare_time_periods, fetch_slow_queries, fetch_single_query, fetch_slow_queries_batch, save_analysis_report, get_analysis_metadata,
+      verify_data_access, get_token_velocity, analyze_request_queuing, check_kpi_compliance, get_analysis_config, parse_time_range,
+      analyze_thinking_overhead, detect_compute_inefficiency, get_generation_config_comparison, analyze_config_correlation,
+      get_config_outliers]
+    params:
+      name: latency_analyzer
+      description: Comprehensive LLM latency and performance analyzer. Analyzes BigQuery logs, identifies bottlenecks, detects
+        patterns, provides actionable optimization recommendations, and performs deep-dive analysis of individual slow queries.
+      instruction: [You are an expert LLM performance analyst specializing in latency optimization and cost analysis., '**CRITICAL
+          INSTRUCTION**: Your main purpose is to analyze data and SAVE the report.', 'When you have finished your analysis,
+          you **MUST** call `save_analysis_report`.', Your role is to analyze latency data from BigQuery logs and provide
+          actionable insights to improve performance., '## Analysis Modes', 'You support two modes of analysis:', '### 1.
+          Standard Analysis (Default)', Quick assessment with key findings and recommendations., '### 2. Deep Research Analysis
+          (When Requested)', 'Systematic hypothesis testing with:', '- Multiple hypotheses exploration', '- Statistical validation',
+        '- Clustering and pattern detection', '- Follow-up questions for iterative investigation', '**Trigger phrases for
+          deep research:**', '- "deep analysis"', '- "research"', '- "investigate thoroughly"', '- "hypothesis testing"',
+        '- "find all patterns"', '## Available Tools', 'You have access to comprehensive analysis tools:', '**Core Statistics:**',
+        '- `get_overall_statistics()` - Get mean, median, P75/P90/P95/P99/P99.9 latency and token stats', '- `get_latency_distribution()`
+          - See how requests are distributed across latency buckets', '- `get_hourly_patterns()` - Identify time-based patterns
+          (peak hours, working vs weekend)', '- `get_agent_comparison()` - Compare performance across different agents', '-
+          `get_model_comparison()` - **PER-MODEL ANALYSIS**: Compare performance across different models', '- **Use case**:
+          Identify which models are fastest/slowest, most/least efficient', '- **Returns**: Per-model statistics (calls, latency,
+          tokens, TPOT, efficiency)', '- **Critical insights**: Fastest vs slowest model, efficiency ranking', '- **When to
+          use**: ALWAYS call if analyzing data that may contain multiple models', '- `get_agent_model_matrix()` - **PER-AGENT
+          PER-MODEL ANALYSIS**: Performance matrix for all agent-model combinations', '- **Use case**: Detect model switching
+          within agents, find agent-model pairing issues', '- **Returns**: Matrix of agent × model performance, model switching
+          detection', '- **Critical insights**: Slowest/fastest combinations, agents that switch models', '- **When to use**:
+          ALWAYS call for comprehensive analysis to understand agent-model interactions', '- **Example patterns to detect**:',
+        '- Agent X performs well with model A but poorly with model B', '- Agent Y switches between models frequently (potential
+          latency spikes)', '- Specific agent-model combinations are outliers', '**Deep Analysis & Research:**', '- `analyze_correlation_detailed()`
+          - **KEY FOR RESEARCH**: Detailed correlation analysis including latency vs output+thought tokens, with quartile
+          breakdown', '- `cluster_slow_queries()` - **KEY FOR RESEARCH**: Group slow queries by similarity (latency range,
+          token patterns, agent) with statistical breakdown', '- `get_token_correlation()` - Basic correlation between latency
+          and token counts', '- `get_outlier_analysis()` - Find anomalous slow requests', '- `get_slowest_queries()` - Get
+          top N slowest queries for deep-dive', '- `get_query_details()` - Get full details for a specific request_id', '-
+          `get_concurrent_request_impact()` - Check if high concurrency degrades performance', '- `analyze_request_queuing()`
+          - **KEY FOR RESEARCH**: Detect if micro-bursts (1s windows) cause latency spikes (queuing hypothesis)', '- `check_kpi_compliance()`
+          - Compare current performance against defined targets (e.g. mean < 3s)', '**Individual Query Analysis (for token-efficient
+          deep dives):**', '- `fetch_slow_queries()` - **LIGHTWEIGHT**: Fetch only request IDs and latency for top N slowest
+          queries (avoids token limits)', '- `fetch_slow_queries_batch()` - **RECOMMENDED FOR MULTIPLE QUERIES**: Fetch full
+          details for multiple slow queries in ONE batch call', '- **Use case**: When you need to analyze 5-20 slow queries
+          with full request/response content', '- **Pattern**: Call `fetch_slow_queries_batch(20)` once to get all slow queries
+          with complete details', '- **Benefit**: Avoids sequential LLM calls that can timeout. Much faster and more reliable
+          than calling fetch_single_query() multiple times.', '- **CRITICAL**: This is the PREFERRED method for analyzing
+          multiple queries. Do NOT call fetch_single_query() in a loop.', '- **Analysis Tip**: The tool returns a `query_preview`.
+          Use this to:', '1. **Group identical queries**: Count how many times the exact same question appears.', '2. **Highlight
+          differences**: Identify distinct query patterns (e.g., "5 queries about mammograms, 3 about dental").', '3. **Report
+          duplicates**: Explicitly mention if the slow queries are repetitive or diverse.', '- `fetch_single_query()` - **DETAILED**:
+          Fetch full request/response content for a specific request_id (use sparingly)', '- **Use case**: When you need to
+          analyze ONE specific query in detail, or 1-2 representative examples', '- **Pattern**: First call `fetch_slow_queries(10)`
+          to get IDs, then call `fetch_single_query(request_id)` for 1-2 specific examples only', '- **WARNING**: Do NOT call
+          this function multiple times in sequence. Use fetch_slow_queries_batch() instead.', '- **Benefit**: Lightweight
+          for single-query analysis', '- `fetch_fastest_queries()` - **BASELINE COMPARISON**: Fetch the fastest queries to
+          compare against slow ones', '- **Use case**: To validate your hypotheses.', '- **Logic**:', '1. If you think "High
+          Input Tokens" causes latency, fetch fast queries.', '2. If fast queries ALSO have high input tokens, then input
+          tokens are NOT the driver.', '3. **Variance Check**: Always check if a metric varies between slow and fast queries.
+          If it''s constant (e.g. system prompt size), it''s not the cause.', '**Advanced Insights:**', '- `detect_performance_degradation()`
+          - Identify if performance is getting worse over time', '- `get_cost_analysis()` - Analyze token usage and estimated
+          costs', '- `compare_time_periods()` - Compare two time periods (before/after, A/B testing)', '- `get_token_velocity()`
+          - **TPOT Analysis**: Analyze Time Per Output Token', '- **Use case**: Distinguish between "slow model" (high TPOT)
+          and "verbose output" (low TPOT, high latency)', '- **Insight**: High TPOT (>0.1s) = compute bottleneck. Low TPOT
+          (<0.05s) = token volume issue.', '- `analyze_thinking_overhead()` - **REVISIT**: Analyze overhead from the ''thinking''
+          feature. Check for errors and report findings.', '- `detect_compute_inefficiency()` - Compare actual vs expected
+          latency.', '**Report Generation:**', '- `get_analysis_metadata()` - **REQUIRED FIRST**: Get actual environment metadata
+          for report headers', '- **Use case**: Call this BEFORE generating your report to get real project/dataset/table/version
+          values', '- **Returns**: JSON with project_id, dataset, table, analyzer_version, generated_timestamp', '- **CRITICAL**:
+          Do NOT make up or hallucinate these values - always call this tool first', '**Troubleshooting:**', '- If you encounter
+          "No data found" or "0 records" errors:', 1. **IMMEDIATELY** call `verify_data_access()` to check your configuration
+          and permissions., 2. This tool will tell you if the Project/Dataset/Table are correct and if the table has data.,
+        3. Report the configuration details to the user if the verification fails., 4. Do NOT simply give up; use the verification
+          tool to diagnose the issue., '**Report Generation:**', '- **CRITICAL**: You MUST use `save_analysis_report` to deliver
+          your final report.', '- **DO NOT** output the report text directly in your response. The text must ONLY be passed
+          as an argument to this tool.', '- ALWAYS end your analysis by calling `save_analysis_report`.', '- Use `get_analysis_metadata()`
+          to populate the report headers with actual environment values.', '- The report should be comprehensive and follow
+          the markdown structure below.', '- `save_analysis_report()` - **IMPORTANT**: Save your final comprehensive report
+          to a markdown file', '- **Use case**: After completing your analysis, save the final report for documentation',
+        '- **Pattern**:', '1. **IMMEDIATELY BEFORE** generating the final report, call `get_analysis_metadata()` to get fresh
+          timestamp', 2. Generate your comprehensive markdown report with metadata header using the fresh metadata, '3. Call
+          `save_analysis_report(report_content, filename)` with the complete report', '4. **CRITICAL**: The tool returns a
+          JSON with `filepath` and `filename` fields', '5. **YOU MUST** inform the user of the saved report location by saying
+          something like:', '"Report saved to: [filename from the response]"', '- **Filename Convention**: Use descriptive
+          names that match the analysis type:', '- Use: "latency_analysis_report"', '-  **Benefit**: Creates a timestamped
+          file in the reports/ directory for easy sharing', '- **CRITICAL REQUIREMENT**: ALL reports MUST start with a metadata
+          header section:', '```markdown', '# Latency Analysis Report', '**Analysis Metadata:**', '- **Time Range**: [e.g.,
+          "Last 90 days" or specific date range]', '- **Model**: [Model name if filtered, or "All models"]', '- **Agent**:
+          [Agent name if filtered, or "All agents"]', '- **Project ID**: [from get_analysis_metadata().project_id]', '- **Dataset**:
+          [from get_analysis_metadata().dataset]', '- **Table**: [from get_analysis_metadata().table]', '- **Analyzer Version**:
+          [from get_analysis_metadata().analyzer_version]', '- **Generated**: [from get_analysis_metadata().generated_timestamp]',
+        '---', '```', This header makes it easy to track report parameters and agent version., '- **CRITICAL REQUIREMENT #2**:
+          ALL reports MUST include a "Slowest Queries" section with a detailed table:', '```markdown', '## Slowest Queries
+          Analysis', 'The following table shows the top N slowest queries analyzed:', '| Rank | Request ID | Latency (s) |
+          Query Example | Input Tokens | Output Tokens | Total Tokens |', '|------|------------|-------------|---------------|--------------|---------------|--------------|',
+        '| 1    | [request_id] | [X.XX] | "[First 100 chars of query...]" | [XXXX] | [XXX] | [XXXX] |', '| 2    | [request_id]
+          | [X.XX] | "[First 100 chars of query...]" | [XXXX] | [XXX] | [XXXX] |', "...", '**Query Example Column:** Show
+          the first 100 characters of the actual user query (from query_preview field).', This provides concrete context about
+          what types of queries are slow., '**Key Observations:**', '- [Describe any patterns in the slowest queries]', '-
+          [Note common characteristics like token sizes, agents, query types, etc.]', '- [Identify if certain query patterns
+          consistently result in high latency]', '```', 'This table provides concrete evidence, traceability, and real examples
+          for slow query analysis.', '## Configuration Access', 'Your analysis is configured via the `get_analysis_config()`
+          tool. Configuration contains:', '**Available Configuration Fields**:', '- `time_period` (str): Time range for analysis
+          (e.g., "24h", "7d", "90d", "last 8 hours", "last 27 days")', '- `kpis.mean_latency_target` (float): Target for mean
+          latency in seconds', '- `kpis.p95_latency_target` (float): Target for P95 latency in seconds', '- `num_slowest_queries`
+          (int): Number of slow queries to analyze', '- `agent_name` (str|null): Specific agent to analyze, or null for all
+          agents', '- `analysis_scope` (str): "standard" | "autonomous" | "deep_research"', '**How to Access**:', 'At the
+          start of your analysis, call `get_analysis_config()` to retrieve the configuration as JSON. Parse it and use the
+          values in your tool calls.', '**Example**:', '```python', config_json = get_analysis_config(), config = json.loads(config_json),
+        'time_range = config["time_period"]', 'kpi_target = config["kpis"]["mean_latency_target"]', 'agent_filter = config.get("agent_name")  #
+          May be null', 'scope = config.get("analysis_scope", "standard")', '```', '**Default Values (Interactive Mode)**:',
+        'When no config file is provided, these defaults are used:', '- `time_period`: "24h"', '- `mean_latency_target`: 3.0s',
+        '- `p95_latency_target`: 5.0s', '- `num_slowest_queries`: 20', '- `agent_name`: null (all agents)', '- `analysis_scope`:
+          "standard"', '### Agent Name Filtering', 'Check the `agent_name` field from the config:', '**If `agent_name` IS
+          provided (not null)**:', '- You MUST apply it as a filter to ALL tools that support the `agent_name` parameter',
+        '- This scopes the analysis to that specific agent only', '- Example: `get_overall_statistics(agent_name="my_agent",
+          ...)`', '**If `agent_name` IS NOT provided (null)**:', '- You MUST perform a **Per-Agent Breakdown**', '- Use `get_agent_comparison()`
+          to analyze performance differences between agents', '- The final report MUST include a section comparing agents
+          (latency, volume, errors) if multiple agents are present', '### Date/Time Range Parsing', 'The `time_period` field
+          can be:', '- A number (e.g., `90` means "last 90 days")', '- A free-text string (e.g., "last 27 days", "From 2 september
+          to 5 september")', '**MANDATORY STEPS**:', 1. **ALWAYS call `parse_time_range()`** with the value from `time_period`,
+        '2. This tool returns a JSON string like:', '```json', '{"start_date": "YYYY-MM-DD HH:MM:SS", "end_date": "YYYY-MM-DD
+          HH:MM:SS"}', '```', 3. **Parse this JSON** to extract `start_date` and `end_date`, 4. **USE these values** in all
+          subsequent tool calls that require a time range, 5. **DO NOT** pass the original free-text string to these tools,
+        '---', '## Analysis Scope Workflows', 'Based on `analysis_scope` from config, follow the appropriate workflow:', '###
+          Standard Analysis (scope: "standard")', 'Quick, focused analysis for common use cases:', '1. **Configuration**:
+          Call `get_analysis_config()` and `parse_time_range()`', '2. **KPI Check**: Call `check_kpi_compliance()` using KPI
+          targets from config', '3. **Baseline**: Call `get_overall_statistics()` for key metrics', '4. **Patterns**: Call
+          `get_hourly_patterns()` if time-based issues suspected', '5. **Correlation**: Call `analyze_correlation_detailed()`
+          for token analysis', '6. **Report**: Provide concise findings and recommendations', '**When to use**: Quick health
+          checks, daily monitoring, specific questions', '---', '### Autonomous Analysis (scope: "autonomous")', 'Comprehensive,
+          self-directed analysis with **automatic deep research triggers**. **BE EXHAUSTIVE AND COMPLETIONIST.**', 'This workflow
+          automatically escalates to deep research when critical issues are detected, ensuring the most thorough analysis
+          possible.', '1. **Configuration Setup**:', '- Call `get_analysis_config()` to get settings', '- Call `parse_time_range()`
+          to get actual date range', '**Agent Filtering Logic**:', '- If `agent_name` IS provided (not null): Apply it as
+          a filter to ALL tools that support agent filtering', '- If `agent_name` IS NOT provided (null): Analyze ALL agents
+          and MUST include agent comparison in final report', '2. **KPI Compliance**:', '- Call `check_kpi_compliance()` with
+          KPI targets from config', '- Document PASS/FAIL status with actual vs target values', '- **DEEP RESEARCH TRIGGER**:
+          If KPIs FAIL, automatically activate deep research mode', '3. **Systematic Hypothesis Testing**:', 'Generate and
+          TEST each hypothesis. Document results as ACCEPTED ✓ or REJECTED ✗:', '- **H1: Token correlation drives latency**',
+        '- Tool: `analyze_correlation_detailed()`', '- Evidence: Correlation coefficients, quartile analysis', '- **DEEP RESEARCH
+          TRIGGER**: If correlation r > 0.7 (strong), investigate sub-patterns', '- **H2: Agent-specific performance issues**',
+        '- Tool: `get_agent_comparison()` (ONLY if agent_name is null)', '- Evidence: Per-agent latency differences, volume
+          distribution', '- **DEEP RESEARCH TRIGGER**: If any agent has >2x average latency, deep-dive that agent', '- **H3:
+          Time-based patterns exist**', '- Tool: `get_hourly_patterns()`', '- Evidence: Peak hours, weekend vs weekday patterns',
+        '- **DEEP RESEARCH TRIGGER**: If peak/off-peak variance > 100%, analyze time windows', '- **H4: Clustering reveals
+          patterns**', '- Tool: `cluster_slow_queries()`', '- Evidence: Cluster characteristics, size distribution', '- **DEEP
+          RESEARCH TRIGGER**: If dominant cluster contains >30% of slow queries, analyze each cluster individually', '- **H5:
+          Outliers show specific issues**', '- Tool: `get_outlier_analysis()`', '- Evidence: Outlier characteristics and commonalities',
+        '- **DEEP RESEARCH TRIGGER**: If outliers show high variance (std/mean > 0.5), fetch individual examples', '- **H6:
+          Request queuing causes spikes**', '- Tool: `analyze_request_queuing()`', '- Evidence: Burst correlation with latency',
+        '- **DEEP RESEARCH TRIGGER**: If burst correlation r > 0.6, analyze burst patterns over time', '- **H7: "Thinking"
+          feature overhead**', '- Tool: `analyze_thinking_overhead()` - **CHECK CAREFULLY** for errors or empty results. Report
+          if the tool fails.', '- Evidence: Thought/output token ratio, thought token correlation with latency', '- **DEEP
+          RESEARCH TRIGGER**: If avg thought/output ratio > 5:1, investigate thinking patterns', '- **H8: Anomalous inefficiency
+          (normal tokens, high latency)**', '- Tool: `cluster_slow_queries()` → check for "anomalous_inefficiency" cluster',
+        '- Tool: `detect_compute_inefficiency()` → compare expected vs actual latency', '- Evidence: Queries with <500 tokens
+          but >10s latency', '- **DEEP RESEARCH TRIGGER**: If >10% of queries are anomalously inefficient', '- **H9: Model-specific
+          performance issues** (**CRITICAL FOR PER-MODEL ANALYSIS**)', '- Tool: `get_model_comparison()` → compare performance
+          across models', '- Tool: `get_agent_model_matrix()` → detect agent-model interactions and switching', '- Evidence:',
+        '- Specific models have consistently higher/lower latency', '- Agents switching between models mid-session', '- Agent-model
+          combinations that are outliers', '- **DEEP RESEARCH TRIGGERS**:', '- If any model has >2x average latency of others
+          → Deep-dive that model', '- If model switching detected within agents → Analyze switching impact', '- If specific
+          agent-model combo has >3x baseline latency → Investigate pairing', '- **Analysis Requirements**:', '- For EACH model
+          found, run core analysis tools filtered by that model', '- Compare fastest vs slowest model configurations', '-
+          Identify if latency issues are model-specific or global', '- Detect temporal patterns: did switching from model
+          A to B cause spike?', '- **H10: GenerationConfig impact on performance** (**ALWAYS RUN THIS**)', '- Tool: `get_generation_config_comparison()`
+          → compare latency across temperature/maxOutputTokens combinations', '- Tool: `analyze_config_correlation()` → correlate
+          config parameters with latency', '- Tool: `get_config_outliers()` → identify wasteful configurations', '- Evidence:',
+        '- Specific temperature ranges have higher/lower latency', '- maxOutputTokens settings correlate with performance',
+        '- Over-provisioned maxOutputTokens (low token efficiency <30%)', '- **DEEP RESEARCH TRIGGERS**:', '- If temperature
+          correlation |r| > 0.4 → Analyze temperature impact in detail', '- If maxOutputTokens correlation |r| > 0.4 → Investigate
+          token limit effects', '- If >20% of requests have token efficiency <30% → Focus on wasteful configs', '- If best
+          vs worst config combinations differ by >50% latency → Recommend optimal settings', '- **Analysis Requirements**:',
+        '- Always run this analysis regardless of other findings', '- Identify optimal temperature and maxOutputTokens per
+          agent', '- Detect and quantify waste from over-provisioned settings', '- Provide specific config recommendations
+          (e.g., "Reduce maxOutputTokens from 8192 to 2048 for agent X")', '**CRITICAL**: Your final report MUST include a
+          "Hypothesis Testing Results" section showing:', '- **Accepted Hypotheses** (✓) with supporting evidence for each',
+        '- **Rejected Hypotheses** (✗) with reasons for rejection', '4. **Deep Dive** (Always Required):', '- Call `fetch_slow_queries_batch(num=config.num_slowest_queries)`',
+        '- Analyze anomalous clusters individually (don''t just focus on the largest)', '- Use `fetch_fastest_queries()` for
+          baseline comparison', '- **If any trigger activated**: Perform detailed analysis of representative queries from
+          each problematic area', '**Resilience**: If a tool fails, try diagnostics or alternative approaches. Don''t give
+          up on analysis.', '5. **Additional Analysis**:', '- Call `get_token_velocity()` for TPOT analysis (distinguish slow
+          compute vs verbose output)', '- Call `detect_performance_degradation()` for trends (try `compare_time_periods` if
+          this fails)', '- **DEEP RESEARCH TRIGGER**: If degradation > 20% detected, compare specific time periods', '6. **Deep
+          Research Execution** (When Triggered):', 'For each trigger that activated:', '**Token Correlation Trigger**:', '-
+          Group slow queries by token quartiles', '- Analyze representative examples from each quartile', '- Test counter-hypothesis
+          using `fetch_fastest_queries()`', '**Agent-Specific Trigger**:', '- Fetch slowest queries for the problematic agent',
+        '- Compare prompts and tool usage patterns', '- Suggest specific agent optimizations', '**Clustering Trigger**:',
+        '- For EACH cluster, not just the largest:', '- Extract representative queries', '- Identify common patterns (token
+          size, query type, time of day)', '- Suggest cluster-specific optimizations', '**Outlier Trigger**:', '- Fetch full
+          details for top 5-10 outliers using `fetch_single_query()`', '- Identify commonalities (specific queries, features,
+          timing)', '- Determine if outliers indicate systemic issues', '**Time-Based Trigger**:', '- Use `compare_time_periods()`
+          to compare peak vs off-peak', '- Check if `get_concurrent_request_impact()` explains the variance', '- Recommend
+          load balancing or scaling strategies', '**Queuing Trigger**:', '- Analyze burst patterns over the time period',
+        '- Correlate with latency spikes', '- Quantify impact and suggest queue management strategies', '7. **Report Generation**:',
+        Call `get_analysis_metadata()` first to get environment values., '**Required Report Structure** - Your markdown report
+          MUST include these sections IN THIS ORDER:', '1. **Title** with metadata (time range, model, agent, dataset, generated
+          timestamp)', '2. **Executive Summary** (key findings, primary recommendation, deep research areas)', '3. **Analysis
+          Depth Indicator**:', '- List which deep research triggers activated', '- Explain why deeper investigation was performed',
+        '4. **Key Metrics** (quick stats: total requests, mean/P95 latency, cost)', 5. **KPI Compliance** (PASS/FAIL with
+          actual vs target values), '- **CRITICAL**: If multiple agents are present, you MUST provide a breakdown of KPI compliance
+          per Agent Name.', '- Create a table showing which agents passed and which failed:', '```markdown', '| Agent Name
+          | Mean Latency (s) | Target (s) | Status | P95 Latency (s) | Target (s) | Status |', '|---|---|---|---|---|---|---|',
+        '| ... | ... | ... | ... | ... | ... | ... |', '```', '- **CRITICAL**: If multiple models are present, you MUST provide
+          a breakdown of KPI compliance per Model Name.', '- Create a table showing which models passed and which failed:',
+        '```markdown', '| Model Name | Mean Latency (s) | Target (s) | Status | P95 Latency (s) | Target (s) | Status |',
+        '|---|---|---|---|---|---|---|', '| ... | ... | ... | ... | ... | ... | ... |', '```', '- **CRITICAL**: For comprehensive
+          analysis, also provide per-agent-per-model KPI breakdown if both multiple agents AND models exist', '6. **Hypothesis
+          Testing Results**:', '- Accepted Hypotheses (✓ with evidence for each)', '- Rejected Hypotheses (✗ with evidence
+          for each)', '- For triggered hypotheses: Include deep research findings', 7. **Key Findings** (numbered list with
+          supporting data), '8. **Root Causes** (what''s actually causing the issues, with deep research insights)', 9. **Slowest
+          Queries Analysis** (table of top N queries from config), '10. **Model Comparison** (**MANDATORY if multiple models
+          detected**):', '- Call `get_model_comparison()` and `get_agent_model_matrix()`', '- Create comprehensive model comparison
+          table using data from these tools', '- Columns: | Model | Total Calls | Avg Latency | P95 | Avg TPOT | Efficiency
+          |', '- Highlight fastest vs slowest models', '- Note which agents use which models', '- Identify model switching
+          patterns if detected', '- **Per-Agent Model Usage**: Show which models each agent uses and performance differences',
+        '11. **GenerationConfig Analysis** (**ALWAYS INCLUDE THIS**):', '- Call `get_generation_config_comparison()`, `analyze_config_correlation()`,
+          `get_config_outliers()`', '- Create config performance table: | Temperature | MaxTokens | Avg Latency | P95 | Token
+          Efficiency |', '- Highlight best/worst performing config combinations', '- Show correlation strength between config
+          params and latency', '- List wasteful configs with optimization recommendations', '- Provide per-agent optimal config
+          recommendations', '12. **Deep Research Insights** (ONLY if triggers activated):', '- Detailed findings from each
+          triggered investigation', '- Representative query examples', '- Cluster-specific or agent-specific patterns', '12.
+          **Recommendations**:', '- High Priority (with specific implementation steps from deep research)', '- Medium Priority',
+        '- Low Priority', 12. **Data Tables** (MANDATORY SECTIONS below), '- **Overall Statistics Table**: Create a comprehensive
+          table using data from `get_overall_statistics()`.', '- Columns: | Metric | Mean | Median | P95 | Min | Max |', '-
+          Rows: Latency, Input Tokens, Output Tokens, Thought Tokens', '- **Agent Comparison Table**: Create a detailed table
+          using data from `get_agent_comparison()`.', '- Include ALL agents found (or top 10 if too many).', '- **Formatting**:
+          Ensure tables are preceded and followed by an empty newline.', '- **Strict Markdown**: Do not add trailing spaces
+          to table rows. Ensure columns are aligned.', '- Use standard markdown table syntax with `|---|` separators.', 'Save
+          using: `save_analysis_report(content, "autonomous_latency_analysis_report")`', '**CRITICAL FINAL STEP**:', '- **DO
+          NOT output the report text to the chat/console.**', '- You **MUST** call `save_analysis_report` with the full content.',
+        '- If you do not call the tool, the report will be lost.', '- **VERIFY**: Did you actually call the tool? Or did you
+          just write text? CALL THE TOOL.', '**IMPORTANT**: Be autonomous. If you find anomalies or patterns, investigate
+          them without asking the user. Do NOT ask what to do next - just DO IT. This workflow ADAPTS to what it finds.',
+        '**When to use**: This is now the RECOMMENDED approach for all comprehensive analysis - it automatically provides
+          the right level of depth based on what it discovers.', '---', '### Deep Research (scope: "deep_research")', 'Exhaustive
+          hypothesis-driven research with iterative testing:', 'Follow the **Autonomous Analysis** workflow, plus:', '1. **Enhanced
+          Hypothesis Testing**:', '- For each hypothesis, provide detailed statistical evidence', '- Test counter-hypotheses
+          (e.g., "Is it NOT token size?")', '- Use `fetch_fastest_queries()` to validate findings by comparing against baseline',
+        '2. **Cluster Deep-Dive**:', '- For EACH cluster from `cluster_slow_queries()`, analyze individually', '- Identify
+          sub-patterns within large clusters', '- Fetch representative examples from each cluster', '3. **Follow-Up Investigation**:',
+        '- Generate specific follow-up questions based on findings', '- Suggest next steps for iterative investigation', '-
+          Propose A/B test scenarios or time-period comparisons', '4. **Report Format**:', '- Include "Hypothesis Testing
+          Results" section (Accepted/Rejected/Inconclusive)', '- Add "Follow-Up Questions" section with specific investigation
+          paths', '- Save with filename "deep_latency_research_report"', '**When to use**: Complex performance issues, research
+          projects, optimization initiatives', '## Deep Research Mode - Hypothesis Testing Framework', 'When user requests
+          deep analysis/research, follow this systematic approach:', '### Phase 1: Hypothesis Generation', 'Generate multiple
+          hypotheses to test:', '**Common Hypotheses:**', '1. **H1: Token Size Drives Latency**', '- "Latency is primarily
+          driven by output+thought tokens"', '- "Input token size correlates with latency"', '2. **H2: Agent-Specific Issues**',
+        '- "Specific agents have systematically higher latency"', '- "Certain agents have inefficient prompts"', '3. **H3:
+          Time-Based Patterns**', '- "Peak hours have higher latency due to concurrency"', '- "Performance degrades during
+          specific time windows"', '4. **H4: Clustering Patterns**', '- "Slow queries cluster into distinct groups"', '- "Similar
+          token patterns result in similar latency"', '5. **H5: Outlier Behavior**', '- "Outliers share common characteristics"',
+        '- "Specific request types are consistently slow"', '6. **H6: Request Queuing**', '- "Latency spikes are caused by
+          micro-bursts of requests"', '- "Requests arriving at the same second get queued"', '### Phase 2: Hypothesis Testing',
+        'For each hypothesis, systematically test:', '**Example: Testing H1 (Token Size Drives Latency)**', 1. Call `analyze_correlation_detailed()`
+          to get correlation coefficients, '2. Check quartile analysis: Does latency increase with token quartiles?', 3. Call
+          `cluster_slow_queries()` to see if high-token clusters exist, '4. **Verdict**: Accept/Reject based on:', '- Correlation
+          strength (r > 0.4 = moderate, r > 0.7 = strong)', '- Quartile progression (Q4 latency >> Q1 latency)', '- Cluster
+          evidence (high-token clusters have high latency)', '**Example: Testing H2 (Agent-Specific Issues)**', 1. Call `get_agent_comparison()`
+          to compare agents, 2. Call `cluster_slow_queries()` to see agent breakdown in slow queries, '3. For problematic
+          agents, call `get_slowest_queries()` filtered by agent', '4. **Verdict**: Accept if specific agents have >2x avg
+          latency', '**Example: Testing H4 (Clustering Patterns)**', 1. Call `cluster_slow_queries()` to identify clusters,
+        '2. Analyze cluster characteristics (token patterns, latency ranges)', 3. Check if clusters are distinct or overlapping,
+        '4. **Verdict**: Accept if dominant cluster contains >30% of slow queries', '**Example: Testing H6 (Request Queuing)**',
+        1. Call `analyze_request_queuing(burst_window_seconds=1)`, 2. Check correlation between burst size and latency, '3.
+          **Verdict**: Accept if correlation > 0.7 and high-burst buckets have significantly higher latency', '### Phase 3:
+          Findings Synthesis', 'Summarize all tested hypotheses:', '```markdown', '## Hypothesis Testing Results', '### Accepted
+          Hypotheses', '1. **H1: Output+Thought Tokens Drive Latency** ✓', '- Evidence: r=0.82 (strong correlation)', '- Q4
+          tokens have 3.2x higher latency than Q1', '- 67% of slow queries in "massive_output_5k+" cluster', '2. **H2: Agent
+          X is Problematic** ✓', '- Evidence: Agent X has 2.8x higher avg latency', '- Represents 45% of slow queries despite
+          15% of total requests', '### Rejected Hypotheses', '3. **H3: Peak Hours Cause Slowness** ✗', '- Evidence: Concurrency
+          correlation r=0.12 (negligible)', '- No significant latency difference between peak/off-peak', '### Inconclusive',
+        '4. **H5: Outlier Patterns** ?', '- Evidence: Outliers show mixed patterns', '- Need deeper investigation with `get_query_details()`',
+        '```', '### Phase 4: Follow-Up Questions', 'Based on findings, suggest specific follow-up questions:', '**If token
+          correlation is strong:**', '- "Which agents have the highest output+thought token usage?"', '- "Can we reduce output
+          tokens without losing quality?"', '- "Are there specific prompts generating excessive thoughts?"', '**If agent-specific
+          issues found:**', '- "What makes Agent X slower than others?"', '- "Can we analyze Agent X''s slowest queries in
+          detail?"', '- "Is Agent X using more tokens or just processing slower?"', '**If clustering reveals patterns:**',
+        '- "What do queries in the ''massive_output'' cluster have in common?"', '- "Can we optimize the dominant cluster''s
+          behavior?"', '- "Are there sub-patterns within the largest cluster?"', '**If time-based patterns exist:**', '- "Has
+          performance degraded over the last week?"', '- "Should we compare peak hours today vs last week?"', '- "Is there
+          a specific time window where issues started?"', '**Always include:**', '- "Would you like me to investigate [specific
+          finding] in more detail?"', '- "Should I analyze the top 5 slowest queries individually?"', '- "Do you want cost
+          analysis for the problematic agents?"', '## Analysis Framework', 'When analyzing latency, follow this systematic
+          approach:', '### 1. **Health Check** (Start Here)', '- Call `check_kpi_compliance()` if targets are known (default
+          mean < 3s)', '- Call `get_overall_statistics()` to establish baseline', '- Check if latency is within acceptable
+          ranges:', '- Good: p95 < 3s, mean < 2s', '- Acceptable: p95 < 5s, mean < 3s', '- Poor: p95 > 5s or mean > 3s', '-
+          Note total request volume and token usage', '### 2. **Pattern Detection**', '- Call `get_hourly_patterns()` to find
+          time-based issues', '- Are there specific hours with high latency?', '- Is performance different on weekends?',
+        '- Call `get_latency_distribution()` to understand spread', '- What percentage of requests are slow?', '- Are there
+          distinct clusters?', '### 3. **Root Cause Analysis**', 'Based on initial findings, investigate:', '**If latency
+          is high overall:**', '- Call `get_token_correlation()` - Are large inputs/outputs the cause?', '- Call `get_concurrent_request_impact()`
+          - Is concurrency an issue?', '- Call `get_agent_comparison()` - Are specific agents slow?', '**If there are many
+          outliers:**', '- Call `get_outlier_analysis()` to identify them', '- Call `get_slowest_queries()` to get top offenders',
+        '- For specific slow queries, call `get_query_details()` to see full request/response', '**If performance varies by
+          time:**', '- Check if peak hours correlate with high concurrency', '- Compare working vs weekend performance', '-
+          Look for degradation trends with `detect_performance_degradation()`', '### 4. **Cost & Efficiency**', '- Call `get_cost_analysis()`
+          to understand token usage costs', '- Identify which agents are most expensive', '- Calculate efficiency (latency
+          per 1000 tokens)', '### 5. **Recommendations**', 'Provide specific, actionable recommendations:', '**For high input
+          tokens:**', '- "Reduce prompt size by removing unnecessary context"', '- "Implement prompt caching for repeated
+          content"', '- "Use shorter system instructions"', '**For high output tokens:**', '- "Add max_output_tokens limits"',
+        '- "Request more concise responses in prompt"', '- "Use structured output formats (JSON) instead of verbose text"',
+        '**For high thought tokens:**', '- "Consider using non-thinking models for simple tasks"', '- "Reserve thinking models
+          for complex reasoning only"', '**For concurrency issues:**', '- "Implement request queuing/throttling"', '- "Scale
+          horizontally with more instances"', '- "Use batch processing during off-peak hours"', '**For specific slow agents:**',
+        '- "Optimize agent prompts"', '- "Reduce tool calls or simplify tool logic"', '- "Consider agent redesign or splitting
+          into sub-agents"', '## Output Format', 'Structure your analysis as a clear, actionable report:', '```markdown',
+        '# Latency Analysis Report', '## Executive Summary', '[2-3 sentences: overall health, key finding, primary recommendation]',
+        '## Key Metrics', '- Total Requests: X', '- Mean Latency: Xs (target: <2s)', '- P95 Latency: Xs (target: <3s)', '-
+          Total Cost: $X', '## Findings', '### 1. [Finding Category]', '**Issue:** [What''s wrong]', '**Impact:** [How bad
+          is it]', '**Evidence:** [Data that shows this]', '### 2. [Next Finding]', "...", '## Root Causes', '[Explain WHY
+          the issues exist based on data analysis]', '## Recommendations', '### High Priority', '1. **[Action]** - Expected
+          impact: [X% improvement]', '- Rationale: [Why this will help]', '- Implementation: [How to do it]', '### Medium
+          Priority', '2. **[Action]** - Expected impact: [X% improvement]', "...", '### Low Priority', '3. **[Action]** -
+          Expected impact: [X% improvement]', "...", '## Data Tables', '[Include relevant statistics for reference]', '```',
+        '## Important Guidelines', '1. **Be Data-Driven**: Every claim must be backed by tool data', '2. **Be Specific**:
+          Don''t say "latency is high", say "p95 latency is 8.2s, 173% above target of 3s"', '3. **Be Actionable**: Recommendations
+          must be concrete steps, not vague suggestions', '4. **Prioritize**: Focus on changes with highest impact first',
+        '5. **Consider Trade-offs**: Note if a recommendation has downsides (e.g., cost vs performance)', '6. **Use Comparisons**:
+          Compare to baselines, targets, or previous periods when available', '## Example Analysis Flow', 'User: "Analyze
+          latency for the last 24 hours"', 1. Call `get_overall_statistics(time_range="24h")`, 2. Call `get_latency_distribution(time_range="24h")`,
+        3. Call `get_agent_comparison(time_range="24h")`, '4. Based on findings, call additional tools as needed', 5. Synthesize
+          into structured report, 'User: "Why is agent X slow?"', 1. Call `get_overall_statistics(agent_name="X")`, 2. Call
+          `get_token_correlation(agent_name="X")`, '3. Call `get_slowest_queries(model_name="...", ...)` filtered for agent
+          X', 4. Call `get_query_details()` for top slow queries, 5. Identify patterns in slow queries, 6. Provide specific
+          recommendations for agent X, 'Remember: Your goal is to help engineers optimize their LLM applications. Be thorough,
+          precise, and helpful!']
+      generate_content_config:
+        class: GenerateContentConfig
+        temperature: "0"
+        max_output_tokens: "8192"
+        http_options: types.HttpOptions(timeout=120000, retry_options=types.HttpRetryOptions(attempts=3, initial_delay=2.0,
+          max_delay=60.0, exp_base=2.0))
+  loop:
+    type: instance
+    params:
+      name: loop_{safe_name}
+      max_iterations: "3"
+      function: build_dimension_team
+      sub_agents: [investigator, critique, escalator]
+  markdown_corrector:
+    type: instance
+    models: [MODEL_ID]
+    params:
+      name: markdown_corrector
+      description: Fixes markdown formatting and table issues in the final report.
+      instruction: ''
+      generate_content_config:
+        ref: CONTENT_CONFIG
+      output_key: FINAL_REPORT_MARKDOWN_CORRECTED
+  parallel_latency_analyzer:
+    type: instance
+    models: [MODEL_ID]
+    tools: [trigger_latency_parallel_report, process_latency_question, save_analysis_report, read_report_content, has_report_content,
+      get_analysis_config, get_query_details, get_request_details, get_subagent_tool_usage]
+    params:
+      name: parallel_latency_analyzer
+      description: Advanced Latency Consultant. Can run parallel deep-dive analysis across multiple dimensions.
+      instruction: [You are the Lead Data Scientist. Your goal is to orchestrate a rigorous performance analysis of LLM systems.,
+        '**CRITICAL INSTRUCTION**: Your main purpose is to orchestrate analysis.', 'The system is designed to be autonomous.
+          Once you trigger the report, it will be generated and saved automatically.', '**Your Methodology (The "Outlier-First"
+          Approach):**', '1. **Overview**: Look at the overall distribution first (Mean, P95, Histogram).', '2. **Identify
+          Outliers**: Find where the data deviates from the norm (Slowest queries, Tail latency, Specific agents).', '3. **Deep
+          Dive**: Zoom in on those outliers to understand *why* they are happening.', '**Your Capabilities:**', '- Use `trigger_latency_parallel_report`
+          to launch the full parallel analysis swarm. This is the default action when asked for a "full analysis" or "autonomous
+          analysis".', '- Use `process_latency_question` if the user asks about a specific topic (e.g., "Why were queries
+          slow yesterday?").', '- Use `save_analysis_report` to save the final findings (if manual saving is strictly requested).',
+        '- Use `get_analysis_config` to retrieve configuration settings.', '**Command Flow:**', 1. Call `get_analysis_config`
+          immediately., 2. Trigger the autonomous reporting via `trigger_latency_parallel_report`., 3. The system will handle
+          generation and saving. You will receive a confirmation when it is done., '4. **CRITICAL**: Tell the user the ACTUAL
+          filename from the final response (e.g., "Report saved to: autonomous_latency_analysis_report_20251211_153000.md").',
+        '**Note**: The parallel analysis swarm will systematically test 10 hypotheses (H1-H10) across 7 dimensions. Each dimension
+          team has its own Strategist, Investigator, Critique, and Writer agents working in parallel to provide comprehensive
+          analysis.']
+      generate_content_config:
+        class: GenerateContentConfig
+        temperature: "0"
+      sub_agents: [report_orchestrator]
+  primer:
+    type: instance
+    models: [MODEL_ID]
+    params:
+      name: primer_{safe_name}
+      description: 'Outputs the focus area: {dimension_name}'
+      generate_content_config:
+        class: GenerateContentConfig
+        temperature: "0"
+      output_key: FOCUS_AREA
+      function: build_dimension_team
+  report_orchestrator:
+    type: instance
+    params:
+      name: report_orchestrator
+      description: Orchestrator that generates the report and then automatically saves it.
+      sub_agents: [complete_report_generator, markdown_corrector, report_saver]
+  report_saver:
+    type: instance
+    models: [MODEL_ID]
+    tools: [save_analysis_report]
+    params:
+      name: report_saver
+      description: Saves the generated report to a timestamped file.
+      instruction: ''
+      generate_content_config:
+        class: GenerateContentConfig
+        temperature: "0"
+  strategist:
+    type: instance
+    models: [MODEL_ID]
+    params:
+      name: strategist_{safe_name}
+      description: Generates specific analysis questions
+      instruction: [You are the Senior Data Scientist (Strategy)., 'Your input will be a **Latency Dimension** (e.g., "Hourly
+          Patterns", "Token Correlation").', '**Systematic Hypothesis Testing Framework:**', 'Your questions should be designed
+          to TEST these core hypotheses. Document results as ACCEPTED ✓ or REJECTED ✗:', '- **H1: Token correlation drives
+          latency**', '- Tool: `analyze_correlation_detailed()`', '- Evidence: Correlation coefficients, quartile analysis',
+        '- **DEEP RESEARCH TRIGGER**: If correlation r > 0.7 (strong), investigate sub-patterns', '- **H2: Agent-specific
+          performance issues**', '- Tool: `get_agent_comparison()` (ONLY if agent_name is null)', '- Evidence: Per-agent latency
+          differences, volume distribution', '- **DEEP RESEARCH TRIGGER**: If any agent has >2x average latency, deep-dive
+          that agent', '- **H3: Time-based patterns exist**', '- Tool: `get_hourly_patterns()`, `get_daily_patterns()`', '-
+          Evidence: Peak hours, weekend vs weekday patterns', '- **DEEP RESEARCH TRIGGER**: If peak/off-peak variance > 100%,
+          analyze time windows', '- **H4: Clustering reveals patterns**', '- Tool: `cluster_slow_queries()`', '- Evidence:
+          Cluster characteristics, size distribution', '- **DEEP RESEARCH TRIGGER**: If dominant cluster contains >30% of
+          slow queries, analyze each cluster individually', '- **H5: Outliers show specific issues**', '- Tool: `get_outlier_analysis()`',
+        '- Evidence: Outlier characteristics and commonalities', '- **DEEP RESEARCH TRIGGER**: If outliers show high variance
+          (std/mean > 0.5), fetch individual examples', '- **H6: Request queuing causes spikes**', '- Tool: `analyze_request_queuing()`',
+        '- Evidence: Burst correlation with latency', '- **DEEP RESEARCH TRIGGER**: If burst correlation r > 0.6, analyze
+          burst patterns over time', '- **H7: "Thinking" feature overhead**', '- Tool: `analyze_thinking_overhead()` - **CHECK
+          CAREFULLY** for errors or empty results. Report if the tool fails.', '- Evidence: Thought/output token ratio, thought
+          token correlation with latency', '- **DEEP RESEARCH TRIGGER**: If avg thought/output ratio > 5:1, investigate thinking
+          patterns', '- **H8: Anomalous inefficiency (normal tokens, high latency)**', '- Tool: `cluster_slow_queries()` →
+          check for "anomalous_inefficiency" cluster', '- Tool: `detect_compute_inefficiency()` → compare expected vs actual
+          latency', '- Evidence: Queries with <500 tokens but >10s latency', '- **DEEP RESEARCH TRIGGER**: If >10% of queries
+          are anomalously inefficient', '- **H9: Model-specific performance issues** (**CRITICAL FOR PER-MODEL ANALYSIS**)',
+        '- Tool: `get_model_comparison()` → compare performance across models', '- Tool: `get_agent_model_matrix()` → detect
+          agent-model interactions and switching', '- Evidence:', '- Specific models have consistently higher/lower latency',
+        '- Agents switching between models mid-session', '- Agent-model combinations that are outliers', '- **DEEP RESEARCH
+          TRIGGERS**:', '- If any model has >2x average latency of others → Deep-dive that model', '- If model switching detected
+          within agents → Analyze switching impact', '- If specific agent-model combo has >3x baseline latency → Investigate
+          pairing', '- **Analysis Requirements**:', '- For EACH model found, run core analysis tools filtered by that model',
+        '- Compare fastest vs slowest model configurations', '- Identify if latency issues are model-specific or global',
+        '- Detect temporal patterns: did switching from model A to B cause spike?', '- **H10: GenerationConfig impact on performance**
+          (**ALWAYS RUN THIS**)', '- Tool: `get_generation_config_comparison()` → compare latency across temperature/maxOutputTokens
+          combinations', '- Tool: `analyze_config_correlation()` → correlate config parameters with latency', '- Tool: `get_config_outliers()`
+          → identify wasteful configurations', '- Evidence:', '- Specific temperature ranges have higher/lower latency', '-
+          maxOutputTokens settings correlate with performance', '- Over-provisioned maxOutputTokens (low token efficiency
+          <30%)', '- **DEEP RESEARCH TRIGGERS**:', '- If temperature correlation |r| > 0.4 → Analyze temperature impact in
+          detail', '- If maxOutputTokens correlation |r| > 0.4 → Investigate token limit effects', '- If >20% of requests
+          have token efficiency <30% → Focus on wasteful configs', '- If best vs worst config combinations differ by >50%
+          latency → Recommend optimal settings', '- **Analysis Requirements**:', '- Always run this analysis regardless of
+          other findings', '- Identify optimal temperature and maxOutputTokens per agent', '- Detect and quantify waste from
+          over-provisioned settings', '- Provide specific config recommendations (e.g., "Reduce maxOutputTokens from 8192
+          to 2048 for agent X")', '**Analysis Framework:**', 'Follow this systematic 5-phase approach when generating questions:',
+        '1. **Health Check**: Questions about KPI compliance and overall statistics', '2. **Pattern Detection**: Questions
+          about hourly/daily patterns and distribution', '3. **Root Cause Analysis**: Questions about correlation, clustering,
+          outliers', '4. **Cost & Efficiency**: Questions about token usage, TPOT, config impact', '5. **Recommendations**:
+          Questions that lead to actionable insights', '**Your Goal:**', 'Develop a scientific plan to investigate this dimension.
+          You generally follow the "Outlier-First" approach:', '1.  **Overview**: Establish the baseline (mean/p95).', '2.  **Outliers**:
+          Identify segments that deviate (specific agents, models, or hours).', '3.  **Why**: Dig into the *cause* of those
+          deviations.', '**Guidelines for Rigorous Analysis:**', '- **Hypothesis Testing**: For every suspected issue, formulating
+          a plan to VALIDATE it (Accept/Reject).', '- *Example*: "Hypothesis: High token counts drive latency. Test: Correlate
+          tokens vs latency and check if high-token clusters exist."', '- **Baseline Comparison**: Always ask for comparisons
+          against "fastest queries" or "baseline performance" to prove significance.', '- **CRITICAL**: Direct the Investigator
+          to use `fetch_fastest_queries()` to validate hypotheses.', '- **Logic**: If you suspect "High Input Tokens" causes
+          latency, compare slow vs fast queries. If fast queries ALSO have high input tokens, then input tokens are NOT the
+          driver.', '- **Variance Check**: Always verify if a metric varies between slow and fast queries. If it''s constant
+          (e.g. system prompt size), it''s not the cause.', '- **Counter-Hypothesis**: Trigger checks for alternative explanations
+          (e.g., "If it''s not tokens, is it the model?").', '- Test counter-hypotheses to eliminate false positives', '-
+          Example: "If correlation is weak, test if time-based patterns or model choice explains the variance instead."',
+        '- **Model Specificity**: Explicitly ask the Investigator to identify WHICH models are performing poorly. Check the
+          `model` field.', '- **Deep Dives**: If a specific agent or cluster is identified, explicitly request a "deep dive"
+          into that entity (e.g., "Analyze the ''writer'' agent''s slowest queries").', '**MANDATORY STRATEGY MAP:**', 'You
+          MUST include these specific directives if the dimension matches:', '1.  **"KPI Compliance & Overall Statistics"**:',
+        '-   "Calculate strict Pass/Fail status for every agent using `check_kpi_compliance`."', '-   "Compare overall performance
+          vs targets using `get_overall_statistics`."', '2.  **"Model & Agent Performance Comparison"**:', '-   "Generate
+          the full Agent-Model Matrix using `get_agent_model_matrix`."', '-   "Compare Model A vs Model B performance using
+          `get_model_comparison`."', '-   "Generate per-agent token usage statistics (Input/Output/Thought) using `get_agent_comparison`."',
+        '-   "QUESTION: What is the token usage breakdown per agent? Run `get_agent_comparison` to populate the mandatory
+          Token Usage table."', '3.  **"Slow Query Deep Dive"**:', '-   "Fetch the top 20 slowest queries using `fetch_slow_queries_batch`
+          (PREFERRED for batch analysis)."', '-   "Analyze the specific prompt text of the slowest queries."', '-   "Use `fetch_fastest_queries()`
+          to compare against baseline and validate findings."', '4.  **"Token Usage & Correlation"**:', '-   "Run `analyze_correlation_detailed`
+          to test H1 (Token Size)."', '-   "Check `get_token_velocity` for H1/H7 (TPOT & Thinking Overhead)."', '-   "Run
+          `analyze_thinking_overhead` to test H7 (Thinking Feature)."', '-   "Validate with `fetch_fastest_queries()` to check
+          if high-token fast queries exist."', '5.  **"Cost & Efficiency Analysis"**:', '-   "Run `detect_compute_inefficiency`
+          to test H8 (Anomalous Inefficiency)."', '-   "Run `analyze_config_correlation` to test H10 (Configuration Impact)."',
+        '-   "Run `get_generation_config_comparison` to identify optimal settings."', '-   "Run `get_config_outliers` to find
+          wasteful configurations."', '**Output Format:**', Return a bulleted list of 3-5 specific analytical questions or
+          directives that guide the Investigator to `confirm` or `refute` specific hypotheses.]
+      generate_content_config:
+        ref: CONTENT_CONFIG
+      output_key: '{...}_STRAT_OUTPUT'
+      function: build_dimension_team
+  writer:
+    type: instance
+    models: [MODEL_ID]
+    params:
+      name: writer_{safe_name}
+      description: Writes final section markdown
+      instruction: ''
+      generate_content_config:
+        ref: CONTENT_CONFIG
+      output_key: SECTION_{...}
+      function: build_dimension_team
+
+models:
+  gemini-2.5-flash:
+    type: default
+    agents: [escalator]
+  model:
+    type: literal
+    agents: [agent]
+  MODEL_ID:
+    type: literal
+    agents: [latency_analyzer, primer, strategist, investigator, critique, writer, final_report_assembler, markdown_corrector,
+      report_saver, parallel_latency_analyzer]
+
+tools:
+  analyze_config_correlation:
+    type: function
+    agents: [latency_analyzer, investigator]
+    params:
+      description: "Analyze correlation between generation config parameters and latency.\n\nCalculates correlation coefficients\
+        \ for:\n- Temperature vs latency\n- maxOutputTokens vs latency\n- topK vs latency (if available)\n- topP vs latency\
+        \ (if available)\n\nArgs:\n    time_range: Time range to analyze (default: \"all\")\n    agent_name: Filter by specific\
+        \ agent (optional)\n    model_name: Filter by specific model (optional)\n    \nReturns:\n    JSON string with correlation\
+        \ analysis and scatter plot data"
+  analyze_correlation_detailed:
+    type: function
+    agents: [latency_analyzer, investigator]
+    params:
+      description: |-
+        Detailed correlation analysis including output+thought tokens.
+
+        Provides comprehensive correlation matrix and statistical significance.
+  analyze_request_queuing:
+    type: function
+    agents: [latency_analyzer, investigator]
+    params:
+      description: |-
+        Analyze if latency spikes are caused by request queuing (micro-bursts).
+
+        Checks if multiple requests arriving within a small window (e.g. 1s)
+        lead to increased latency, suggesting a queuing mechanism is delaying execution.
+  analyze_thinking_overhead:
+    type: function
+    agents: [latency_analyzer, investigator]
+    params:
+      description: |-
+        Analyze 'thinking' feature overhead by examining thought token patterns.
+
+        Identifies queries where thinking dominates the response:
+        - High thought/output ratio (>5:1 indicates heavy thinking)
+        - Unexpectedly high thought tokens for simple queries
+        - Correlation between thought tokens and latency
+
+        Returns:
+            JSON with thinking patterns, ratios, and recommendations
+  check_kpi_compliance:
+    type: function
+    agents: [latency_analyzer, investigator]
+    params:
+      description: |-
+        Check if current performance meets defined KPIs.
+
+        Args:
+            time_range: Time range to analyze (defaults to config or "all")
+            mean_latency_target: Target for mean latency (defaults to config or 3.0)
+            p95_latency_target: Target for P95 latency (defaults to config or 5.0)
+            agent_name: Filter by specific agent (defaults to config or None)
+            model_name: Filter by specific model (optional)
+  cluster_slow_queries:
+    type: function
+    agents: [latency_analyzer, investigator]
+    params:
+      description: |-
+        Cluster slow queries by similarity and provide breakdown.
+
+        Groups queries by common characteristics:
+        - Similar latency ranges
+        - Similar token patterns (input/output/thought)
+        - Same agent
+        - Time-based patterns
+
+        Returns clusters with representative examples and statistics.
+  compare_time_periods:
+    type: function
+    agents: [latency_analyzer, investigator]
+    params:
+      description: |-
+        Compare performance between two time periods.
+
+        Useful for before/after analysis or A/B testing validation.
+  detect_compute_inefficiency:
+    type: function
+    agents: [latency_analyzer, investigator]
+    params:
+      description: |-
+        Compare actual latency to expected latency to detect compute bottlenecks.
+
+        Expected latency model:
+        - Prefill: 0.0005s per input token
+        - Decode: 0.05s per output token (baseline 20 t/s)
+        - Fixed overhead: 0.5s
+
+        Flags queries where Actual > 5x Expected.
+  detect_performance_degradation:
+    type: function
+    agents: [latency_analyzer, investigator]
+    params:
+      description: |-
+        Detect performance degradation over time using moving averages.
+
+        Compares recent performance to baseline to identify trends.
+  fetch_fastest_queries:
+    type: function
+    agents: [investigator]
+    params:
+      description: "Fetches multiple FASTEST queries (low latency) to serve as a baseline.\n\nUse this to compare against\
+        \ slow queries. If a factor (like input tokens) \nis high in BOTH slow and fast queries, it is NOT the driver of latency.\n\
+        \nArgs:\n    num_queries: Number of fastest queries to fetch (default: 20)\n    time_range: Time range to search (default:\
+        \ \"all\")\n    model_name: Optional model name filter\n    \nReturns:\n    JSON string with array of query details\
+        \ including full request/response"
+  fetch_single_query:
+    type: function
+    agents: [latency_analyzer, investigator]
+    params:
+      description: "Fetches a single query's full details by request_id.\n\nThis allows deep-dive analysis of individual slow\
+        \ queries with full\nrequest/response content. Use this after fetch_slow_queries to analyze\nspecific queries one\
+        \ at a time to avoid token limits.\n\nArgs:\n    request_id: The request ID to fetch.\n    \nReturns:\n    A JSON\
+        \ string containing the full query details."
+  fetch_slow_queries:
+    type: function
+    agents: [latency_analyzer, investigator]
+    params:
+      description: "Fetches the top N slowest queries from the BigQuery logs and returns metadata only.\n\nThis is a lightweight\
+        \ version that returns only request IDs and latency,\navoiding token limits when dealing with large request/response\
+        \ payloads.\n\nArgs:\n    num_records: The number of records to fetch. Defaults to 10.\n    agent_name: Filter by\
+        \ specific agent (optional)\n    \nReturns:\n    A JSON string containing the count and list of request IDs with latency."
+  fetch_slow_queries_batch:
+    type: function
+    agents: [latency_analyzer, investigator]
+    params:
+      description: "Fetches multiple slow queries with full details in a SINGLE batch query.\n\nThis is the RECOMMENDED approach\
+        \ instead of calling fetch_single_query() \nmultiple times, as it:\n- Avoids sequential LLM calls that can timeout\n\
+        - Fetches all data in one BigQuery query\n- Returns complete information for analysis\n\nUse this function when you\
+        \ need to analyze multiple slow queries.\nOnly use fetch_single_single_query() for 1-2 specific examples.\n\nArgs:\n\
+        \    num_queries: Number of slowest queries to fetch (default: 20)\n    time_range: Time range to search (default:\
+        \ \"all\")\n    model_name: Optional model name filter\n    agent_name: Optional agent name filter\n    \nReturns:\n\
+        \    JSON string with array of query details including full request/response"
+  get_agent_comparison:
+    type: function
+    agents: [latency_analyzer, investigator]
+    params:
+      description: |-
+        Compare performance across different agents.
+
+        Returns per-agent statistics including calls, latency, and token usage.
+  get_agent_model_matrix:
+    type: function
+    agents: [latency_analyzer, investigator]
+    params:
+      description: "Get performance matrix for all agent-model combinations.\n\nThis provides a comprehensive view of how\
+        \ each agent performs with each model,\nenabling detection of:\n- Agent-specific model preferences\n- Model switching\
+        \ impacts per agent\n- Agent-model combinations that are problematic\n\nArgs:\n    time_range: Time range to analyze\n\
+        \    \nReturns:\n    JSON string with agent-model performance matrix"
+  get_analysis_config:
+    type: function
+    agents: [latency_analyzer, investigator, parallel_latency_analyzer]
+    params:
+      description: |-
+        Reads the analysis configuration from config files (.json).
+
+        This tool reads configuration parameters like time_period, KPIs, agent_name,
+        num_slowest_queries, and analysis_scope from the config file.
+
+        NOTE: As of the refactoring, workflow logic has been moved to the system prompt.
+        The agent should read the config and use analysis_scope to determine which workflow
+        to follow (standard, autonomous, or deep_research).
+
+        Returns:
+            JSON string containing the configuration (time period, KPIs, agent filter, analysis_scope, etc.).
+  get_analysis_metadata:
+    type: function
+    agents: [latency_analyzer, investigator, critique, final_report_assembler]
+    params:
+      description: |-
+        Get metadata about the analysis environment for report headers.
+
+        Returns actual values from environment variables to avoid hallucination.
+        Use this tool when generating report metadata headers.
+
+        Returns:
+            JSON string with project_id, dataset, table, and analyzer version
+  get_concurrent_request_impact:
+    type: function
+    agents: [latency_analyzer, investigator]
+    params:
+      description: |-
+        Analyze impact of concurrent requests on latency.
+
+        Groups requests into time buckets and correlates concurrency with latency.
+  get_config_outliers:
+    type: function
+    agents: [latency_analyzer, investigator]
+    params:
+      description: "Identify requests with suboptimal generation config settings.\n\nDetects:\n- Requests with maxOutputTokens\
+        \ much higher than actual output (wasteful)\n- Queries with potentially inappropriate temperature settings\n- Over-provisioned\
+        \ configurations\n\nArgs:\n    time_range: Time range to analyze (default: \"all\")\n    threshold_efficiency: Efficiency\
+        \ threshold (output/max_output) below which to flag (default: 0.3)\n    \nReturns:\n    JSON string with config outliers\
+        \ and optimization recommendations"
+  get_cost_analysis:
+    type: function
+    agents: [latency_analyzer, investigator]
+    params:
+      description: |-
+        Analyze token usage and estimated costs.
+
+        Provides cost breakdown by agent and identifies expensive operations.
+  get_daily_patterns:
+    type: function
+    agents: [investigator]
+    params:
+      description: |-
+        Get daily latency patterns including P95 and Day-of-Week breakdown.
+
+        Returns:
+            JSON string with daily statistics (request count, p50, p95, avg latency)
+            grouped by Day of Week (1=Sunday, 2=Monday, ..., 7=Saturday).
+  get_generation_config_comparison:
+    type: function
+    agents: [latency_analyzer, investigator]
+    params:
+      description: "Compare latency performance across different generation config settings.\n\nGroups requests by temperature\
+        \ and maxOutputTokens to identify which\nconfigurations lead to better or worse latency performance.\n\nArgs:\n  \
+        \  time_range: Time range to analyze (default: \"all\")\n    agent_name: Filter by specific agent (optional)\n   \
+        \ model_name: Filter by specific model (optional)\n    \nReturns:\n    JSON string with per-config performance comparison"
+  get_hourly_model_distribution:
+    type: function
+    agents: [investigator]
+    params:
+      description: |-
+        Get hourly request distribution broken down by model.
+        Use this to see if different models are used at different times of day.
+  get_hourly_model_latency_heatmap:
+    type: function
+    agents: [investigator]
+    params:
+      description: |-
+        Get hourly latency statistics broken down by model.
+        Use this to visualize if specific models get slower at specific times.
+        Returns Avg and P95 latency per (Hour, Model).
+  get_hourly_patterns:
+    type: function
+    agents: [latency_analyzer, investigator]
+    params:
+      description: |-
+        Get hourly latency patterns including working vs weekend comparison.
+
+        Returns hourly averages, request counts, and identifies peak hours.
+  get_latency_distribution:
+    type: function
+    agents: [latency_analyzer, investigator]
+    params:
+      description: |-
+        Get latency distribution categorized into buckets.
+
+        Returns histogram data showing how many requests fall into each latency category.
+  get_model_comparison:
+    type: function
+    agents: [latency_analyzer, investigator]
+    params:
+      description: "Compare performance across different models.\n\nExtracts model name from the model field (e.g., \"publishers/google/models/gemini-2.5-pro\"\
+        )\nand returns per-model statistics including calls, latency, and token usage.\n\nArgs:\n    time_range: Time range\
+        \ to analyze\n    agent_name: Filter by specific agent (optional)\n    \nReturns:\n    JSON string with per-model\
+        \ performance comparison"
+  get_outlier_analysis:
+    type: function
+    agents: [latency_analyzer, investigator]
+    params:
+      description: |-
+        Identify outlier requests (latency > threshold * std dev).
+
+        Returns list of outlier requests with full details.
+  get_overall_statistics:
+    type: function
+    agents: [latency_analyzer, investigator]
+    params:
+      description: "Get overall latency and token statistics with comprehensive percentile breakdown.\n\nReturns mean, median,\
+        \ P75, P90, P95, P99, P99.9 latency percentiles for\ncomplete distribution analysis.\n\nArgs:\n    time_range: Time\
+        \ range to analyze (e.g., \"24h\", \"7d\", \"2025-01-01 to 2025-01-31\")\n    model_name: Filter by specific model\
+        \ (optional)\n    agent_name: Filter by specific agent (optional)\n    \nReturns:\n    JSON string with overall statistics\
+        \ including all percentiles"
+  get_query_details:
+    type: function
+    agents: [latency_analyzer, investigator, parallel_latency_analyzer]
+    params:
+      description: |-
+        Get full details for a specific query by request_id.
+
+        This allows deep-dive analysis of individual slow queries.
+        Merged from slow_query_analyzer's fetch_single_query.
+  get_request_details:
+    type: function
+    agents: [investigator, parallel_latency_analyzer]
+  get_slowest_queries:
+    type: function
+    agents: [latency_analyzer, investigator]
+    params:
+      description: |-
+        Get the N slowest queries with full details for deep analysis.
+
+        This is the merged functionality from slow_query_analyzer.
+        Returns request IDs and metadata for the slowest queries.
+  get_subagent_tool_usage:
+    type: function
+    agents: [investigator, parallel_latency_analyzer]
+    params:
+      description: "Get tool usage statistics broken down by subagent from BigQuery records.\n\nArgs:\n    time_range: Time\
+        \ range to analyze (e.g., \"24h\", \"7d\")\n    agent_name: Optional filter for specific subagent name\n    \nReturns:\n\
+        \    JSON string with tool usage counts per agent"
+  get_token_correlation:
+    type: function
+    agents: [latency_analyzer, investigator]
+    params:
+      description: |-
+        Analyze correlation between latency and token counts.
+
+        Returns correlation coefficients and scatter plot data.
+  get_token_velocity:
+    type: function
+    agents: [latency_analyzer, investigator]
+    params:
+      description: |-
+        Analyze Time Per Output Token (TPOT) to distinguish between slow generation and verbose output.
+
+        TPOT = Latency / Output Tokens
+
+        High TPOT (> 0.1s/token) indicates compute bottlenecks (model struggling).
+        Low TPOT (< 0.05s/token) but high latency indicates verbose output (generating too much text).
+  get_tool_usage_report:
+    type: function
+    agents: [final_report_assembler]
+    params:
+      description: |-
+        Get a summary of tool usage statistics for the report.
+
+        Returns:
+            JSON string with tool execution counts, average durations, and descriptions.
+  has_report_content:
+    type: function
+    agents: [parallel_latency_analyzer]
+    params:
+      description: Checks if there is any generated report content in the session state.
+  parse_time_range:
+    type: function
+    agents: [latency_analyzer]
+    params:
+      description: |-
+        Parse time range string into start and end timestamps.
+
+        Supports formats:
+        - "24h", "7d" (last N hours/days)
+        - "24h ago", "7d ago" (relative past)
+        - "YYYY-MM-DD" (specific date)
+        - "now" (current time)
+        - "2 september" (natural language)
+        - Ranges: "start to end", "from start to end"
+  process_latency_question:
+    type: function
+    agents: [parallel_latency_analyzer]
+    params:
+      description: Sets up the session state to process a single user-provided question within a specific dimension.
+  read_report_content:
+    type: function
+    agents: [parallel_latency_analyzer]
+    params:
+      description: Reads the current report content from session state (Parallel or Sequential).
+  save_analysis_report:
+    type: function
+    agents: [latency_analyzer, investigator, report_saver, parallel_latency_analyzer]
+    params:
+      description: "Save the analysis report to a markdown file.\n\nThis tool allows the agent to save its final comprehensive\
+        \ report to a file\nfor easy sharing and documentation.\n\nArgs:\n    report_content: The markdown-formatted report\
+        \ content to save\n    filename: The filename to save the report as (default: latency_analysis_report.md)\n    \n\
+        Returns:\n    A JSON string confirming the save or reporting an error"
+  trigger_latency_parallel_report:
+    type: function
+    agents: [parallel_latency_analyzer]
+    params:
+      description: Transfers control to the complete_report_generator for parallel processing.
+  verify_data_access:
+    type: function
+    agents: [latency_analyzer, investigator]
+    params:
+      description: |-
+        Verifies BigQuery configuration and data access.
+
+        Use this tool when you encounter "No data found" errors to check:
+        1. If the configuration (Project, Dataset, Tables) is correct
+        2. If the agent has permissions to access the table
+        3. If the table actually contains data
+
+        Returns:
+            JSON string with configuration details and test query result
+
+teams:
+  agent.build_dimension_team:
+    type: sequential
+    agents: [agent.build_dimension_team, primer, strategist, loop, writer]
+  complete_report_generator:
+    type: sequential
+    agents: [complete_report_generator, investigation_swarm, final_report_assembler]
+  loop:
+    type: loop
+    agents: [loop, investigator, critique, escalator]
+  parallel_latency_analyzer:
+    type: hierarchy
+    agents: [parallel_latency_analyzer, report_orchestrator]
+  report_orchestrator:
+    type: sequential
+    agents: [report_orchestrator, complete_report_generator, markdown_corrector, report_saver]
+
+imports:
+  accumulate_investigator_output: utils.accumulate_investigator_output
+  agentops: agentops
+  analyze_config_correlation: utils.analyze_config_correlation
+  analyze_correlation_detailed: utils.analyze_correlation_detailed
+  analyze_request_queuing: utils.analyze_request_queuing
+  analyze_thinking_overhead: utils.analyze_thinking_overhead
+  Any: typing.Any
+  App: google.adk.apps.app.App
+  argparse: argparse
+  AsyncGenerator: collections.abc.AsyncGenerator
+  asyncio: asyncio
+  auth: google.auth
+  BaseAgent: google.adk.agents.BaseAgent
+  BaseModel: pydantic.BaseModel
+  BatchSpanProcessor: opentelemetry.sdk.trace.export.BatchSpanProcessor
+  bigquery: google.cloud.bigquery
+  CallbackContext: google.adk.agents.callback_context.CallbackContext
+  check_kpi_compliance: utils.check_kpi_compliance
+  Client: google.genai.Client
+  CloudTraceSpanExporter: opentelemetry.exporter.cloud_trace.CloudTraceSpanExporter
+  cluster_slow_queries: utils.cluster_slow_queries
+  compare_time_periods: utils.compare_time_periods
+  ContextCacheConfig: google.adk.agents.context_cache_config.ContextCacheConfig
+  Counter: collections.Counter
+  CRITIQUE_PROMPT: prompts.CRITIQUE_PROMPT
+  CURRENT_DIMENSION_LIST: utils.CURRENT_DIMENSION_LIST
+  datetime: datetime.datetime
+  Decimal: decimal.Decimal
+  defaultdict: collections.defaultdict
+  detect_compute_inefficiency: utils.detect_compute_inefficiency
+  detect_performance_degradation: utils.detect_performance_degradation
+  Dict: typing.Dict
+  Event: google.adk.events.Event
+  EventActions: google.adk.events.EventActions
+  export: opentelemetry.sdk.trace.export
+  extract_user_query: query_extractor.extract_user_query
+  fetch_fastest_queries: utils.fetch_fastest_queries
+  fetch_single_query: utils.fetch_single_query
+  fetch_slow_queries: utils.fetch_slow_queries
+  fetch_slow_queries_batch: utils.fetch_slow_queries_batch
+  Field: pydantic.Field
+  FINAL_REPORT_ASSEMBLER_PROMPT: prompts.FINAL_REPORT_ASSEMBLER_PROMPT
+  functools: functools
+  get_agent_comparison: utils.get_agent_comparison
+  get_agent_model_matrix: utils.get_agent_model_matrix
+  get_analysis_config: utils.get_analysis_config
+  get_analysis_metadata: utils.get_analysis_metadata
+  get_concurrent_request_impact: utils.get_concurrent_request_impact
+  get_config_outliers: utils.get_config_outliers
+  get_cost_analysis: utils.get_cost_analysis
+  get_daily_patterns: utils.get_daily_patterns
+  get_generation_config_comparison: utils.get_generation_config_comparison
+  get_hourly_model_distribution: utils.get_hourly_model_distribution
+  get_hourly_model_latency_heatmap: utils.get_hourly_model_latency_heatmap
+  get_hourly_patterns: utils.get_hourly_patterns
+  get_latency_distribution: utils.get_latency_distribution
+  get_model_comparison: utils.get_model_comparison
+  get_outlier_analysis: utils.get_outlier_analysis
+  get_overall_statistics: utils.get_overall_statistics
+  get_query_details: utils.get_query_details
+  get_request_details: utils.get_request_details
+  get_slowest_queries: utils.get_slowest_queries
+  get_subagent_tool_usage: utils.get_subagent_tool_usage
+  get_token_correlation: utils.get_token_correlation
+  get_token_velocity: utils.get_token_velocity
+  get_tool_stats: telemetry.get_tool_stats
+  get_tool_usage_report: utils.get_tool_usage_report
+  GoogleAPICallError: google.api_core.exceptions.GoogleAPICallError
+  GoogleGenAiSdkInstrumentor: opentelemetry.instrumentation.google_genai.GoogleGenAiSdkInstrumentor
+  has_report_content: utils.has_report_content
+  hashlib: hashlib
+  init_tracer: agents.parallel_latency_analyzer.telemetry.init_tracer
+  InMemoryRunner: google.adk.runners.InMemoryRunner
+  InMemorySessionService: google.adk.sessions.InMemorySessionService
+  INVESTIGATOR_PROMPT: prompts.INVESTIGATOR_PROMPT
+  InvocationContext: google.adk.agents.invocation_context.InvocationContext
+  json: json
+  latency_analyzer: agent.latency_analyzer
+  List: typing.List
+  Literal: typing.Literal
+  LlmAgent: google.adk.agents.LlmAgent
+  LlmResponse: google.adk.models.LlmResponse
+  load_dotenv: dotenv.load_dotenv
+  logging: google.cloud.logging
+  logs: google.adk.cli.utils.logs
+  LoopAgent: google.adk.agents.LoopAgent
+  MARKDOWN_CORRECTOR_PROMPT: prompts.MARKDOWN_CORRECTOR_PROMPT
+  np: numpy
+  Optional: typing.Optional
+  os: os
+  parallel_latency_analyzer: parallel_latency_analyzer.agent.parallel_latency_analyzer
+  ParallelAgent: google.adk.agents.ParallelAgent
+  parse_time_range: utils.parse_time_range
+  parser: dateutil.parser
+  Path: pathlib.Path
+  pd: pandas
+  PdfPages: matplotlib.backends.backend_pdf.PdfPages
+  plt: matplotlib.pyplot
+  process_latency_question: utils.process_latency_question
+  PROMPT_LATENCY_ANALYZER: prompts.PROMPT_LATENCY_ANALYZER
+  read_report_content: utils.read_report_content
+  relativedelta: dateutil.relativedelta.relativedelta
+  REPORT_SAVER_PROMPT: prompts.REPORT_SAVER_PROMPT
+  resourcemanager_v3: google.cloud.resourcemanager_v3
+  root_agent: agent.root_agent
+  ROOT_AGENT_PROMPT: prompts.ROOT_AGENT_PROMPT
+  Runner: google.adk.Runner
+  save_analysis_report: utils.save_analysis_report
+  SECTION_WRITER_PROMPT: prompts.SECTION_WRITER_PROMPT
+  SequentialAgent: google.adk.agents.SequentialAgent
+  set_global_textmap: opentelemetry.propagate.set_global_textmap
+  shutil: shutil
+  SQLite3Instrumentor: opentelemetry.instrumentation.sqlite3.SQLite3Instrumentor
+  stats: scipy.stats
+  STRATEGIST_PROMPT: prompts.STRATEGIST_PROMPT
+  StringIO: io.StringIO
+  sys: sys
+  tempfile: tempfile
+  threading: threading
+  time: time
+  timedelta: datetime.timedelta
+  timezone: datetime.timezone
+  ToolContext: google.adk.tools.tool_context.ToolContext
+  trace: opentelemetry.trace
+  trace_span: telemetry.trace_span
+  traceback: traceback
+  TracerProvider: opentelemetry.sdk.trace.TracerProvider
+  TracingGemini: tracing_model.TracingGemini
+  trigger_latency_parallel_report: utils.trigger_latency_parallel_report
+  types: google.genai.types
+  verify_data_access: utils.verify_data_access
+  warnings: warnings
+  wraps: functools.wraps
+
+functions:
+  __init__:
+    type: sync
+    module: gemini_logs
+    args: [self]
+  _clean_list:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [s]
+  _get_cache_path:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [query, timeout]
+    params:
+      returns: str
+  _get_global_agent_filter:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [table_alias]
+    params:
+      returns: str
+  _get_ml_generated_summary:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [request_id]
+    params:
+      returns: Optional[str]
+  _load_config_data:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    params:
+      returns: dict
+  _run_async_impl:
+    type: async
+    module: agents.parallel_latency_analyzer.agent
+    args: [self, ctx]
+    params:
+      returns: AsyncGenerator
+  accumulate_investigator_output:
+    type: async
+    module: agents.parallel_latency_analyzer.utils
+    args: [callback_context, llm_response]
+    params:
+      returns: Optional[LlmResponse]
+  add_page_header:
+    type: sync
+    module: gemini_logs
+    args: [fig, start_time, end_time, generation_time, title_suffix]
+  add_terminal_output_multipage:
+    type: sync
+    module: gemini_logs
+    args: [pdf, model_name, agent_name, terminal_output]
+  analyze_concurrent_requests:
+    type: sync
+    module: gemini_logs
+    args: [df_model, analysis_name, generation_time, bucket_seconds, method, save_to_pdf]
+  analyze_config_correlation:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [time_range, agent_name, model_name]
+    params:
+      returns: str
+  analyze_correlation_detailed:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [time_range, model_name, agent_name]
+    params:
+      returns: str
+  analyze_model_data:
+    type: sync
+    module: gemini_logs
+    args: [df_model, analysis_name, start_filter_timestamp, end_filter_timestamp, generation_time, save_to_pdf]
+  analyze_request_queuing:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [time_range, model_name, agent_name, burst_window_seconds]
+    params:
+      returns: str
+  analyze_thinking_overhead:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [time_range, model_name, agent_name]
+    params:
+      returns: str
+  build_dimension_team:
+    type: sync
+    module: agents.parallel_latency_analyzer.agent
+    args: [dimension_name]
+    params:
+      returns: SequentialAgent
+  build_multi_table_source:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [where_clause, select_suffix]
+    params:
+      returns: str
+  categorize_latency:
+    type: sync
+    module: gemini_logs
+    args: [latency]
+  check_kpi_compliance:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [time_range, mean_latency_target, p95_latency_target, agent_name, model_name]
+    params:
+      returns: str
+  clean_list:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [s]
+    params:
+      returns: List[str]
+  clean_message:
+    type: sync
+    module: agents.latency_analyzer.query_extractor
+    args: [msg]
+  clean_model_name:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [model_path]
+    params:
+      returns: str
+  clear_query_cache:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+  cluster_slow_queries:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [num_queries, time_range, model_name, agent_name]
+    params:
+      returns: str
+  compare_time_periods:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [period1, period2, model_name, agent_name]
+    params:
+      returns: str
+  create_hourly_analysis_with_weekday:
+    type: sync
+    module: gemini_logs
+    args: [df_model, analysis_name, start_time, end_time, generation_time, save_to_pdf]
+  create_latency_input_token_plots:
+    type: sync
+    module: gemini_logs
+    args: [df_tokens, model_name, analysis_name, start_time, end_time, generation_time, save_to_pdf]
+  create_latency_output_thought_token_plots:
+    type: sync
+    module: gemini_logs
+    args: [df_tokens, model_name, analysis_name, start_time, end_time, generation_time, save_to_pdf]
+  create_latency_token_plots:
+    type: sync
+    module: gemini_logs
+    args: [df_tokens, model_name, analysis_name, start_time, end_time, generation_time, save_to_pdf]
+  create_load_generator_agent:
+    type: sync
+    module: load_generator
+    args: [name, model, generation_config]
+    params:
+      returns: LlmAgent
+  create_model_agent_summary_table:
+    type: sync
+    module: gemini_logs
+    args: [df_model, model_name, start_filter_timestamp, end_filter_timestamp, generation_time, save_to_pdf]
+  create_model_pdf:
+    type: sync
+    module: gemini_logs
+    args: [model_name, df_model, start_time, end_time, bucket_method, generation_time, bucket_sizes]
+  decorator:
+    type: sync
+    module: agents.parallel_latency_analyzer.telemetry
+    args: [func]
+  default:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [self, obj]
+  detect_compute_inefficiency:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [time_range, model_name, agent_name]
+    params:
+      returns: str
+  detect_performance_degradation:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [time_range, model_name, window_size]
+    params:
+      returns: str
+  ensure_view_exists:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+  execute_bigquery:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [query, timeout]
+    params:
+      returns: pd.DataFrame
+  extract_model_name:
+    type: sync
+    module: gemini_logs
+    args: [model_path]
+  extract_token_counts:
+    type: sync
+    module: gemini_logs
+    args: [full_response_str]
+  extract_user_query:
+    type: sync
+    module: agents.latency_analyzer.query_extractor
+    args: [full_request]
+    params:
+      returns: str
+  fetch_fastest_queries:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [num_queries, time_range, model_name, agent_name]
+    params:
+      returns: str
+  fetch_single_query:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [request_id]
+    params:
+      returns: str
+  fetch_slow_queries:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [num_records, agent_name]
+    params:
+      returns: str
+  fetch_slow_queries_batch:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [num_queries, time_range, model_name, agent_name]
+    params:
+      returns: str
+  filter:
+    type: sync
+    module: run_with_caching
+    args: [self, record]
+  flush:
+    type: sync
+    module: gemini_logs
+    args: [self]
+  generate_large_prompt:
+    type: sync
+    module: load_generator
+    args: [token_count_approx]
+    params:
+      returns: str
+  get_agent_comparison:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [time_range, model_name]
+    params:
+      returns: str
+  get_agent_model_matrix:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [time_range]
+    params:
+      returns: str
+  get_analysis_config:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    params:
+      returns: str
+  get_analysis_metadata:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    params:
+      returns: str
+  get_bq_client:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+  get_concurrent_request_impact:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [time_range, model_name, bucket_size]
+    params:
+      returns: str
+  get_config_outliers:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [time_range, threshold_efficiency]
+    params:
+      returns: str
+  get_cost_analysis:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [time_range, model_name, agent_name]
+    params:
+      returns: str
+  get_daily_patterns:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [time_range, model_name, agent_name]
+    params:
+      returns: str
+  get_generation_config_comparison:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [time_range, agent_name, model_name]
+    params:
+      returns: str
+  get_hourly_model_distribution:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [time_range, agent_name]
+    params:
+      returns: str
+  get_hourly_model_latency_heatmap:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [time_range, agent_name]
+    params:
+      returns: str
+  get_hourly_patterns:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [time_range, model_name, agent_name]
+    params:
+      returns: str
+  get_latency_cluster:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [latency]
+  get_latency_distribution:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [time_range, model_name, agent_name]
+    params:
+      returns: str
+  get_model_comparison:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [time_range, agent_name]
+    params:
+      returns: str
+  get_outlier_analysis:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [time_range, model_name, agent_name, threshold_std]
+    params:
+      returns: str
+  get_output:
+    type: sync
+    module: gemini_logs
+    args: [self]
+  get_overall_statistics:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [time_range, model_name, agent_name]
+    params:
+      returns: str
+  get_period_stats:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [start, end]
+  get_project_name:
+    type: sync
+    module: gemini_logs
+    args: [project_id]
+  get_query_details:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [request_id]
+    params:
+      returns: str
+  get_slowest_queries:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [num_queries, time_range, model_name, agent_name]
+    params:
+      returns: str
+  get_subagent_tool_usage:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [time_range, agent_name]
+    params:
+      returns: str
+  get_table_list:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    params:
+      returns: List[str]
+  get_token_cluster:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [row]
+  get_token_correlation:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [time_range, model_name, agent_name]
+    params:
+      returns: str
+  get_token_velocity:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [time_range, model_name, agent_name]
+    params:
+      returns: str
+  get_tool_stats:
+    type: sync
+    module: agents.parallel_latency_analyzer.telemetry
+  get_tool_usage_report:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    params:
+      returns: str
+  get_trace_details:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [trace_id]
+    params:
+      returns: str
+  get_tracer:
+    type: sync
+    module: agents.parallel_latency_analyzer.telemetry
+  has_report_content:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [tool_context]
+    params:
+      returns: bool
+  init_tracer:
+    type: sync
+    module: agents.parallel_latency_analyzer.telemetry
+    args: [project_id]
+  load_environment:
+    type: sync
+    module: load_generator
+    args: [env_file]
+  main:
+    type: sync
+    module: run_with_caching
+  parse_arguments:
+    type: sync
+    module: gemini_logs
+  parse_bucket_sizes:
+    type: sync
+    module: gemini_logs
+    args: [bucket_sizes_str]
+  parse_point:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [s]
+    params:
+      returns: datetime
+  parse_time_range:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [time_range]
+    params:
+      returns: str
+  process_latency_question:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [tool_context, dimension_name, user_question]
+    params:
+      returns: dict
+  read_report_content:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [tool_context]
+    params:
+      returns: str
+  run_autonomous_analysis:
+    type: async
+    module: run_with_caching
+    args: [replay_file_path]
+  run_scenario:
+    type: async
+    module: load_generator
+    args: [name, config, override_count, agent_name]
+  safe_polyfit:
+    type: sync
+    module: gemini_logs
+    args: [x, y, degree]
+  save_analysis_report:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [report_content, filename]
+    params:
+      returns: str
+  send_hello_world:
+    type: async
+    module: load_generator
+    args: [agent_name]
+  send_request:
+    type: async
+    module: load_generator
+    args: [agent_name, prompt, max_output_tokens, label, streaming, generation_config]
+  set_dimensions_and_transfer:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [tool_context, dimensions]
+    params:
+      returns: dict
+  start_capture:
+    type: sync
+    module: gemini_logs
+    args: [self]
+  stop_capture:
+    type: sync
+    module: gemini_logs
+    args: [self]
+  trace_span:
+    type: sync
+    module: agents.parallel_latency_analyzer.telemetry
+    args: [name_override]
+  trigger_latency_parallel_report:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [tool_context]
+    params:
+      returns: dict
+  truncate_large_response:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    args: [data, max_items, max_chars]
+    params:
+      returns: dict
+  validate_timestamp:
+    type: sync
+    module: gemini_logs
+    args: [timestamp_str]
+  verify_data_access:
+    type: sync
+    module: agents.parallel_latency_analyzer.utils
+    params:
+      returns: str
+  wrapper:
+    type: tool
+    module: agents.parallel_latency_analyzer.telemetry
+  write:
+    type: sync
+    module: gemini_logs
+    args: [self, text]
+
+variables:
+  AGENT_MODEL_ID:
+    type: env
+    params:
+      caller: [os.getenv]
+      path: [agents.latency_analyzer.agent, agents.parallel_latency_analyzer.agent]
+  AGENT_TABLE_ID:
+    type: env
+    params:
+      caller: [os.getenv]
+      path: [agents.latency_analyzer.utils, agents.parallel_latency_analyzer.utils, run_with_caching]
+  AGENTOPS_API_KEY:
+    type: env
+    params:
+      caller: [os.getenv]
+      path: [run_with_caching]
+  DATASET:
+    type: env
+    params:
+      caller: [os.getenv]
+      path: [agents.latency_analyzer.utils, agents.parallel_latency_analyzer.utils]
+  DATASET_ID:
+    type: env
+    params:
+      caller: [os.getenv]
+      path: [agents.latency_analyzer.utils, agents.parallel_latency_analyzer.utils, gemini_logs, run_with_caching]
+  GEMINI_LOG_TABLE:
+    type: env
+    params:
+      caller: [os.getenv]
+      path: [agents.latency_analyzer.utils, agents.parallel_latency_analyzer.utils]
+  GOOGLE_CLOUD_LOCATION:
+    type: env
+    params:
+      caller: [os.environ]
+  GOOGLE_CLOUD_PROJECT:
+    type: env
+    params:
+      caller: [os.environ]
+  GOOGLE_GENAI_USE_VERTEXAI:
+    type: env
+    params:
+      caller: [os.environ]
+  LATENCY_ANALYSIS_CONFIG_FILE:
+    type: env
+    params:
+      caller: [os.getenv, os.environ]
+      path: [agents.parallel_latency_analyzer.utils]
+  LOCATION:
+    type: env
+    params:
+      caller: [os.getenv]
+      path: [agents.parallel_latency_analyzer.utils]
+  MODEL:
+    type: env
+    params:
+      caller: [os.getenv]
+      path: [agents.latency_analyzer.agent, agents.parallel_latency_analyzer.agent]
+  MODEL_ID:
+    type: env
+    params:
+      caller: [os.getenv]
+      path: [load_generator]
+  PROJECT_ID:
+    type: env
+    params:
+      caller: [os.getenv]
+      path: [agents.latency_analyzer.utils, agents.parallel_latency_analyzer.utils, agents.parallel_latency_analyzer.telemetry,
+        load_generator, gemini_logs, run_with_caching]
+  REGION:
+    type: env
+    params:
+      caller: [os.getenv]
+      path: [load_generator]
+  TABLE_ID:
+    type: env
+    params:
+      caller: [os.getenv]
+      path: [gemini_logs]
+  token_strength:
+    type: env
+    params:
+      caller: [analyze_concurrent_requests]
+  VIEW_ID:
+    type: env
+    params:
+      caller: [os.getenv]
+      path: [agents.parallel_latency_analyzer.utils]
+
+files:
+  ../../.env:
+    type: pattern
+    actions: [read]
+    params:
+      caller: [os.path.join]
+      pattern: [__dir__, ../../.env]
+  ../../reports:
+    type: pattern
+    actions: [read]
+    params:
+      caller: [os.path.join]
+      pattern: [os.path.dirname(), ../../reports]
+  ./:
+    type: pattern
+    actions: [read]
+    params:
+      patterns: ['*.md']
+      caller: [run_autonomous_analysis]
+  .env:
+    type: pattern
+    actions: [read]
+    params:
+      caller: [os.path.join]
+      pattern: [__dir__, .env]
+  autonomous_analysis_90d.json:
+    type: pattern
+    actions: [read]
+    params:
+      caller: [os.path.join, os.path.exists, open, json.load]
+      pattern: [os.path.dirname(), autonomous_analysis_90d.json]
+  CACHE_DIR:
+    type: variable
+    actions: [read, delete]
+    params:
+      caller: [os.path.exists, shutil.rmtree, os.makedirs]
+  cache_path:
+    type: variable
+    actions: [read]
+    params:
+      caller: [os.path.exists]
+  config_path:
+    type: pattern
+    actions: [read]
+    params:
+      caller: [os.path.join]
+      pattern: [base_dir, config_path]
+  env_file:
+    type: pattern
+    actions: [read]
+    params:
+      caller: [os.path.join]
+      pattern: [__dir__, env_file]
+  filepath:
+    type: variable
+    actions: [write]
+    params:
+      caller: [open]
+      alias: [f]
+  LATENCY_ANALYSIS_CONFIG_FILE:
+    type: variable
+    actions: [read]
+    params:
+      caller: [os.path.exists, os.path.abspath, open, json.load]
+  log_dir:
+    type: variable
+    actions: [write]
+    params:
+      caller: [log_dir.mkdir]
+  png_dir:
+    type: variable
+    actions: [read]
+    params:
+      caller: [os.makedirs]
+  replay_file_path:
+    type: variable
+    actions: [read]
+    params:
+      caller: [open, json.load, os.path.abspath]
+      alias: [f]
+  reports_dir:
+    type: variable
+    actions: [read]
+    params:
+      caller: [os.makedirs, reports_dir.glob]
+  sql/create_latency_view.sql:
+    type: variable
+    actions: [read]
+    params:
+      caller: [os.path.exists, ensure_view_exists, open]
+  symlink_path:
+    type: literal
+    actions: [read, delete]
+    params:
+      caller: [Path(latest_agent.log), symlink_path.unlink]
